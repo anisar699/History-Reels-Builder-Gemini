@@ -8,9 +8,44 @@ import argparse
 import json
 import random
 from dotenv import load_dotenv
+from typing import List
+from pydantic import BaseModel, Field, field_validator
 
 # Load environment variables from .env file
 load_dotenv()
+
+class ScriptConfig(BaseModel):
+    title: str = Field(..., min_length=1)
+    year: str = Field(..., min_length=1)
+    bg_music_vibe: str = Field(..., min_length=1)
+    caption_text_1: str = Field(..., min_length=1)
+    caption_text_2: str = Field(..., min_length=1)
+    caption_text_3: str = Field(..., min_length=1)
+    caption_text_4: str = Field(..., min_length=1)
+    full_speech_text: str = Field(..., min_length=1)
+    queries: List[str] = Field(...)
+    seo_title: str = Field(..., min_length=1)
+    seo_description: str = Field(..., min_length=1)
+    seo_hashtags: str = Field(..., min_length=1)
+    seo_short_caption: str = Field(..., min_length=1)
+
+    @field_validator("bg_music_vibe")
+    @classmethod
+    def validate_vibe(cls, v):
+        allowed = ["mystery", "epic", "sad", "ancient"]
+        if v.lower() not in allowed:
+            raise ValueError(f"bg_music_vibe must be one of {allowed}")
+        return v.lower()
+
+    @field_validator("queries")
+    @classmethod
+    def validate_queries(cls, v):
+        if len(v) != 8:
+            raise ValueError("Exactly 8 queries must be provided.")
+        for q in v:
+            if not q or not q.strip():
+                raise ValueError("Queries cannot contain empty strings.")
+        return v
 
 # API Keys
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
@@ -206,9 +241,11 @@ def fetch_ai_script(topic, provider="gemini"):
         
         try:
             raw_text = result["candidates"][0]["content"]["parts"][0]["text"]
-            return json.loads(raw_text)
-        except (KeyError, IndexError, json.JSONDecodeError) as e:
-            raise ValueError(f"Failed to parse Gemini API JSON response: {e}. Raw response: {result}")
+            parsed = json.loads(raw_text)
+            validated = ScriptConfig(**parsed)
+            return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
+        except Exception as e:
+            raise ValueError(f"Failed to parse or validate Gemini API response: {e}. Raw response: {result}")
             
     else:
         print(f"Calling OpenAI GPT-4o-mini to auto-generate script for topic: '{topic}'...")
@@ -233,7 +270,9 @@ def fetch_ai_script(topic, provider="gemini"):
         response.raise_for_status()
         result = response.json()
         content = result["choices"][0]["message"]["content"]
-        return json.loads(content)
+        parsed = json.loads(content)
+        validated = ScriptConfig(**parsed)
+        return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
 
 def ensure_assets():
     # Make sure target directories exist
