@@ -1,0 +1,244 @@
+import os
+import sys
+import shutil
+import argparse
+import random
+import requests
+from history_reels import config
+from history_reels.script_generator import fetch_ai_script
+from history_reels.stock_media import download_clip_for_query
+from history_reels.voiceover import generate_voiceover
+from history_reels.renderer import build_video_frames, run_ffmpeg
+from history_reels.seo import write_seo_package
+
+def download_file(url, path):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(url, headers=headers, stream=True, timeout=30)
+    r.raise_for_status()
+    with open(path, "wb") as f:
+        for chunk in r.iter_content(chunk_size=8192):
+            f.write(chunk)
+
+def ensure_assets():
+    # Make sure target directories exist
+    os.makedirs(os.path.dirname(config.FONT_PATH), exist_ok=True)
+    os.makedirs(config.MUSIC_DIR, exist_ok=True)
+    
+    # 1. Ensure Urdu Font exists
+    if not os.path.exists(config.FONT_PATH):
+        print(f"Urdu Font not found at {config.FONT_PATH}. Auto-downloading...")
+        font_url = "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoNastaliqUrdu/NotoNastaliqUrdu-Bold.ttf"
+        try:
+            download_file(font_url, config.FONT_PATH)
+            print("Successfully downloaded Urdu Nastaliq Font!")
+        except Exception as e:
+            print(f"Failed to download Urdu font: {e}")
+            
+    # 2. Ensure Background Music pool exists
+    track_name = f"{config.BG_MUSIC_VIBE}_{config.BG_MUSIC_TRACK_INDEX}"
+    target_music_path = os.path.join(config.MUSIC_DIR, f"{track_name}.mp3")
+    
+    if not os.path.exists(target_music_path):
+        print(f"Background music track '{track_name}.mp3' not found. Auto-downloading...")
+        music_urls = {
+            f"{vibe}_{i}": f"https://archive.org/download/ambient-cinematic-music-royalty-free/Cinematic_Ambient_Music_{i}.mp3"
+            for vibe in ["mystery", "epic", "sad", "ancient"] for i in range(1, 6)
+        }
+        download_url = music_urls.get(track_name)
+        if download_url:
+            try:
+                download_file(download_url, target_music_path)
+                print(f"Successfully downloaded background music: {track_name}.mp3")
+            except Exception as e:
+                print(f"Failed to download music track: {e}")
+
+def check_inputs():
+    os.makedirs(config.TOPIC_TEMP_DIR, exist_ok=True)
+    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+    
+    ensure_assets()
+    
+    if not os.path.exists(config.FONT_PATH):
+        print(f"Error: Urdu Font not found at {config.FONT_PATH}")
+        return False
+        
+    music_mp3 = os.path.join(config.MUSIC_DIR, f"{config.BG_MUSIC_VIBE}_{config.BG_MUSIC_TRACK_INDEX}.mp3")
+    if not os.path.exists(music_mp3):
+        existing_tracks = [f for f in os.listdir(config.MUSIC_DIR) if f.endswith(".mp3")]
+        if existing_tracks:
+            fallback_track = os.path.join(config.MUSIC_DIR, existing_tracks[0])
+            print(f"Warning: Selected music track not found. Using fallback: {existing_tracks[0]}")
+            shutil.copy2(fallback_track, music_mp3)
+        else:
+            print(f"Error: Music file {music_mp3} not found and no fallbacks available!")
+            return False
+
+    # Download raw clips
+    for i, q in enumerate(config.QUERIES, start=1):
+        if not download_clip_for_query(q, i):
+            print(f"Error: Could not retrieve video clip for query '{q}'")
+            return False
+            
+    return True
+
+def copy_deliverables():
+    final_video = os.path.join(config.OUTPUT_DIR, f"{config.OUTPUT_NAME}.mp4")
+    final_txt = os.path.join(config.OUTPUT_DIR, f"{config.OUTPUT_NAME}.txt")
+    
+    print(f"Copying final files to {config.OUTPUT_DIR}...")
+    shutil.copy2(os.path.join(config.TOPIC_TEMP_DIR, "output.mp4"), final_video)
+    shutil.copy2(os.path.join(config.TOPIC_TEMP_DIR, "output.txt"), final_txt)
+    print("Deliverables copied.")
+
+def cleanup():
+    print("Cleaning up temporary topic files...")
+    if os.path.exists(config.TOPIC_TEMP_DIR) and config.TOPIC_TEMP_DIR != config.TEMP_DIR:
+        try:
+            shutil.rmtree(config.TOPIC_TEMP_DIR)
+            print("Cleanup complete.")
+        except Exception as e:
+            print(f"Cleanup warning: {e}")
+
+def generate_video_for_topic(topic, provider="gemini"):
+    # Clear tracking sets/lists for this specific generation run
+    config.DOWNLOADED_VIDEO_IDS.clear()
+    config.VIDEO_ATTRIBUTIONS.clear()
+
+    if topic and topic.strip() != "":
+        print(f"\n--- Generating Video for Topic: '{topic}' ({provider.upper()}) ---")
+        try:
+            ai_data = fetch_ai_script(topic, provider=provider)
+            
+            # Override configuration variables
+            config.TOPIC_TITLE = ai_data["title"]
+            config.TOPIC_YEAR = ai_data["year"]
+            config.BG_MUSIC_VIBE = ai_data["bg_music_vibe"]
+            config.BG_MUSIC_TRACK_INDEX = random.randint(1, 5)
+            
+            clean_title = "".join(c for c in config.TOPIC_TITLE if c.isalnum() or c in (' ', '_', '-')).strip()
+            clean_year = "".join(c for c in config.TOPIC_YEAR if c.isalnum() or c in (' ', '_', '-')).strip()
+            config.OUTPUT_NAME = f"{clean_title} {clean_year} Asad Voice"
+            
+            topic_slug = "".join(c if c.isalnum() else "_" for c in clean_title.lower()).strip("_")
+            config.TOPIC_TEMP_DIR = os.path.join(config.TEMP_DIR, topic_slug)
+            
+            config.CAPTION_TEXT_1 = ai_data["caption_text_1"]
+            config.CAPTION_TEXT_2 = ai_data["caption_text_2"]
+            config.CAPTION_TEXT_3 = ai_data["caption_text_3"]
+            config.CAPTION_TEXT_4 = ai_data["caption_text_4"]
+            
+            config.NARRATION_TEXT_1 = ai_data["narration_text_1"]
+            config.NARRATION_TEXT_2 = ai_data["narration_text_2"]
+            config.NARRATION_TEXT_3 = ai_data["narration_text_3"]
+            config.NARRATION_TEXT_4 = ai_data["narration_text_4"]
+            config.FULL_SPEECH_TEXT = f"{config.NARRATION_TEXT_1} {config.NARRATION_TEXT_2} {config.NARRATION_TEXT_3} {config.NARRATION_TEXT_4}"
+            
+            config.QUERIES = ai_data["queries"]
+            config.NUM_CLIPS = len(config.QUERIES)
+            
+            config.SEO_TITLE = ai_data.get("seo_title", f"{config.TOPIC_TITLE} ({config.TOPIC_YEAR})")
+            config.SEO_DESCRIPTION = ai_data.get("seo_description", config.FULL_SPEECH_TEXT)
+            config.SEO_HASHTAGS = ai_data.get("seo_hashtags", "#History #UrduMysteries")
+            config.SEO_SHORT_CAPTION = ai_data.get("seo_short_caption", config.FULL_SPEECH_TEXT[:100])
+            
+            print("\n=== AI Generated Script & Config ===")
+            print(f"Title: {config.TOPIC_TITLE} ({config.TOPIC_YEAR})")
+            print(f"Music Vibe: {config.BG_MUSIC_VIBE} (Track #{config.BG_MUSIC_TRACK_INDEX})")
+            print(f"Video Search Queries: {config.QUERIES}")
+            print("====================================\n")
+        except Exception as e:
+            print(f"Error fetching AI script, skipping topic '{topic}'. Error: {e}")
+            return False
+    else:
+        print("\n--- Running Fallback Mode (Baghdad Battery) ---")
+        config.TOPIC_TEMP_DIR = os.path.join(config.TEMP_DIR, "baghdad_battery")
+        
+    try:
+        if not check_inputs():
+            print("check_inputs failed. Skipping.")
+            return False
+            
+        voice_dur = generate_voiceover()
+        
+        build_video_frames(voice_dur)
+        run_ffmpeg(voice_dur)
+        write_seo_package()
+        copy_deliverables()
+        cleanup()
+        print(f"SUCCESS! Created video: {config.OUTPUT_NAME}.mp4")
+        return True
+    except Exception as e:
+        print(f"Failed to generate video for topic. Error: {e}")
+        try:
+            cleanup()
+        except Exception:
+            pass
+        return False
+
+def main():
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+        
+    if not config.check_system_dependencies():
+        sys.exit(1)
+        
+    parser = argparse.ArgumentParser(description="AI Short Reel Generator")
+    parser.add_argument("--topic", type=str, help="Single topic for the video")
+    parser.add_argument("--batch", type=str, help="Path to batch topics txt file")
+    parser.add_argument("--provider", type=str, choices=["openai", "gemini"], default="gemini", help="AI provider (openai or gemini)")
+    args = parser.parse_args()
+
+    provider = args.provider
+    
+    if args.topic:
+        # Command-line single topic
+        generate_video_for_topic(args.topic, provider=provider)
+    elif args.batch:
+        # Command-line batch file
+        batch_path = args.batch
+        if not os.path.exists(batch_path):
+            print(f"Error: Batch file '{batch_path}' not found.")
+            sys.exit(1)
+        with open(batch_path, "r", encoding="utf-8") as f:
+            topics = [line.strip() for line in f if line.strip() != ""]
+        print(f"Loaded {len(topics)} topics from file. Starting batch generation...")
+        for idx, t in enumerate(topics, 1):
+            print(f"\nProcessing batch topic {idx}/{len(topics)}: '{t}'")
+            generate_video_for_topic(t, provider=provider)
+    else:
+        # Interactive mode
+        print("="*60)
+        print("         WELCOME TO HISTORY REELS BUILDER AUTO-PILOT")
+        print("="*60)
+        print("Select Generation Mode:")
+        print("1. Single Video Generation")
+        print("2. Batch Video Generation (Multiple Topics)")
+        print("3. Run Fallback Mode (Baghdad Battery Demo)")
+        
+        choice = input("Enter choice (1-3): ").strip()
+        
+        if choice == "1":
+            topic = input("Enter the topic for your video (e.g. Titanic): ").strip()
+            if topic == "":
+                print("Error: Topic cannot be empty.")
+                sys.exit(1)
+            generate_video_for_topic(topic, provider=provider)
+        elif choice == "2":
+            print("\nEnter multiple topics separated by commas (e.g. Taj Mahal, Pyramids, Titanic):")
+            topics_input = input("Topics: ").strip()
+            if topics_input == "":
+                print("Error: Topics list cannot be empty.")
+                sys.exit(1)
+            topics = [t.strip() for t in topics_input.split(",") if t.strip() != ""]
+            print(f"\nStarting batch generation of {len(topics)} videos...")
+            for idx, t in enumerate(topics, 1):
+                print(f"\n[Batch {idx}/{len(topics)}] Generation: '{t}'")
+                generate_video_for_topic(t, provider=provider)
+        elif choice == "3":
+            generate_video_for_topic(None, provider=provider)
+        else:
+            print("Invalid choice. Exiting.")
+            sys.exit(1)
