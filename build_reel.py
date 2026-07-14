@@ -20,6 +20,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 # Directories
 HOME = os.path.expanduser("~")
 TEMP_DIR = os.path.join(HOME, "Downloads", "history_reels_tmp")
+TOPIC_TEMP_DIR = TEMP_DIR
 OUTPUT_DIR = os.path.join(HOME, "Pictures", "history videos")
 FONT_PATH = os.path.join(OUTPUT_DIR, "fonts", "NotoNastaliqUrdu-Bold.ttf")
 MUSIC_DIR = os.path.join(OUTPUT_DIR, "bg_music")
@@ -98,7 +99,7 @@ def download_file(url, path):
             f.write(chunk)
 
 def download_clip_for_query(query, index):
-    save_path = os.path.join(TEMP_DIR, f"raw_clip{index}.mp4")
+    save_path = os.path.join(TOPIC_TEMP_DIR, f"raw_clip{index}.mp4")
     if os.path.exists(save_path):
         print(f"Clip {index} already exists. Skipping download.")
         return True
@@ -238,7 +239,7 @@ def ensure_assets():
                 print(f"Failed to download music track: {e}")
 
 def check_inputs():
-    os.makedirs(TEMP_DIR, exist_ok=True)
+    os.makedirs(TOPIC_TEMP_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
     ensure_assets()
@@ -373,8 +374,8 @@ def build_video_frames(voice_dur):
     
     clips = []
     for i in range(1, NUM_CLIPS + 1):
-        raw_path = os.path.join(TEMP_DIR, f"raw_clip{i}.mp4")
-        clip_path = os.path.join(TEMP_DIR, f"clip{i}.mp4")
+        raw_path = os.path.join(TOPIC_TEMP_DIR, f"raw_clip{i}.mp4")
+        clip_path = os.path.join(TOPIC_TEMP_DIR, f"clip{i}.mp4")
         clips.append(clip_path)
         
         w, h = get_video_dimensions(raw_path)
@@ -402,7 +403,7 @@ def build_video_frames(voice_dur):
         subprocess.run(cmd, check=True)
         
     print("Crossfading clips...")
-    silent_temp = os.path.join(TEMP_DIR, "silent_temp.mp4")
+    silent_temp = os.path.join(TOPIC_TEMP_DIR, "silent_temp.mp4")
     
     filter_parts = []
     last_label = "0:v"
@@ -426,7 +427,7 @@ def build_video_frames(voice_dur):
     subprocess.run(cmd_fade, check=True)
     
     print("Extracting frames for caption burning...")
-    frames_dir = os.path.join(TEMP_DIR, "frames")
+    frames_dir = os.path.join(TOPIC_TEMP_DIR, "frames")
     os.makedirs(frames_dir, exist_ok=True)
     
     cmd_extract = [
@@ -475,8 +476,8 @@ def build_video_frames(voice_dur):
 
 def run_ffmpeg(voice_dur):
     print("Stitching video...")
-    silent_mp4 = os.path.join(TEMP_DIR, "silent.mp4")
-    frames_pattern = os.path.join(TEMP_DIR, "frames", "frame_%04d.jpg")
+    silent_mp4 = os.path.join(TOPIC_TEMP_DIR, "silent.mp4")
+    frames_pattern = os.path.join(TOPIC_TEMP_DIR, "frames", "frame_%04d.jpg")
     
     cmd_video = [
         "ffmpeg", "-y", "-r", str(FPS), "-i", frames_pattern,
@@ -486,11 +487,11 @@ def run_ffmpeg(voice_dur):
     subprocess.run(cmd_video, check=True)
     
     print("Processing audio track (mixing music and voiceover only)...")
-    drone_wav = os.path.join(TEMP_DIR, "drone.wav")
+    drone_wav = os.path.join(TOPIC_TEMP_DIR, "drone.wav")
     
     # Use selected track from local bg_music folder
     music_mp3 = os.path.join(MUSIC_DIR, f"{BG_MUSIC_VIBE}_{BG_MUSIC_TRACK_INDEX}.mp3")
-    voice_mp3 = os.path.join(TEMP_DIR, "voice.mp3")
+    voice_mp3 = os.path.join(TOPIC_TEMP_DIR, "voice.mp3")
     
     # Mix background music and voiceover (no whoosh sound effects overlay)
     cmd_audio = [
@@ -504,7 +505,7 @@ def run_ffmpeg(voice_dur):
     subprocess.run(cmd_audio, check=True)
     
     print("Merging audio and video...")
-    output_mp4 = os.path.join(TEMP_DIR, "output.mp4")
+    output_mp4 = os.path.join(TOPIC_TEMP_DIR, "output.mp4")
     cmd_merge = [
         "ffmpeg", "-y", "-i", silent_mp4, "-i", drone_wav,
         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", output_mp4
@@ -539,7 +540,7 @@ Media: 8 dynamic video clips downloaded via Pexels/Pixabay API.
 Music: Custom Pool Music - Vibe: {BG_MUSIC_VIBE} (Track {BG_MUSIC_TRACK_INDEX}) - Royalty Free.
 ================================================================================
 """
-    seo_path = os.path.join(TEMP_DIR, "output.txt")
+    seo_path = os.path.join(TOPIC_TEMP_DIR, "output.txt")
     with open(seo_path, "w", encoding="utf-8") as f:
         f.write(seo_content)
 
@@ -548,35 +549,25 @@ def copy_deliverables():
     final_txt = os.path.join(OUTPUT_DIR, f"{OUTPUT_NAME}.txt")
     
     print(f"Copying final files to {OUTPUT_DIR}...")
-    shutil.copy2(os.path.join(TEMP_DIR, "output.mp4"), final_video)
-    shutil.copy2(os.path.join(TEMP_DIR, "output.txt"), final_txt)
+    shutil.copy2(os.path.join(TOPIC_TEMP_DIR, "output.mp4"), final_video)
+    shutil.copy2(os.path.join(TOPIC_TEMP_DIR, "output.txt"), final_txt)
     print("Deliverables copied.")
 
 def cleanup():
-    print("Cleaning up temporary files...")
-    frames_dir = os.path.join(TEMP_DIR, "frames")
-    if os.path.exists(frames_dir):
-        shutil.rmtree(frames_dir)
-    
-    intermediates = [
-        "silent.mp4", "drone.wav", "output.mp4", "output.txt",
-        "silent_temp.mp4", "voice.mp3"
-    ]
-    for i in range(1, NUM_CLIPS + 1):
-        intermediates.append(f"clip{i}.mp4")
-        intermediates.append(f"raw_clip{i}.mp4")
-        
-    for file in intermediates:
-        p = os.path.join(TEMP_DIR, file)
-        if os.path.exists(p):
-            os.remove(p)
-    print("Cleanup complete.")
+    print("Cleaning up temporary topic files...")
+    if os.path.exists(TOPIC_TEMP_DIR):
+        try:
+            shutil.rmtree(TOPIC_TEMP_DIR)
+            print("Cleanup complete.")
+        except Exception as e:
+            print(f"Cleanup warning: {e}")
 
 def generate_video_for_topic(topic):
     global TOPIC_TITLE, TOPIC_YEAR, OUTPUT_NAME, BG_MUSIC_VIBE, BG_MUSIC_TRACK_INDEX
     global CAPTION_TEXT_1, CAPTION_TEXT_2, CAPTION_TEXT_3, CAPTION_TEXT_4
     global FULL_SPEECH_TEXT, QUERIES, NUM_CLIPS
     global SEO_TITLE, SEO_DESCRIPTION, SEO_HASHTAGS, SEO_SHORT_CAPTION
+    global TOPIC_TEMP_DIR
 
     if topic and topic.strip() != "":
         print(f"\n--- Generating Video for Topic: '{topic}' ---")
@@ -593,6 +584,10 @@ def generate_video_for_topic(topic):
             clean_title = "".join(c for c in TOPIC_TITLE if c.isalnum() or c in (' ', '_', '-')).strip()
             clean_year = "".join(c for c in TOPIC_YEAR if c.isalnum() or c in (' ', '_', '-')).strip()
             OUTPUT_NAME = f"{clean_title} {clean_year} Asad Voice"
+            
+            # Create a unique topic slug and set dynamic TOPIC_TEMP_DIR
+            topic_slug = "".join(c if c.isalnum() else "_" for c in clean_title.lower()).strip("_")
+            TOPIC_TEMP_DIR = os.path.join(TEMP_DIR, topic_slug)
             
             CAPTION_TEXT_1 = ai_data["caption_text_1"]
             CAPTION_TEXT_2 = ai_data["caption_text_2"]
@@ -619,6 +614,7 @@ def generate_video_for_topic(topic):
             return False
     else:
         print("\n--- Running Fallback Mode (Baghdad Battery) ---")
+        TOPIC_TEMP_DIR = os.path.join(TEMP_DIR, "baghdad_battery")
         
     # Run the generation pipeline
     try:
@@ -627,7 +623,7 @@ def generate_video_for_topic(topic):
             return False
             
         print(f"Generating voiceover using edge-tts with voice {VOICE_ID}...")
-        voice_mp3 = os.path.join(TEMP_DIR, "voice.mp3")
+        voice_mp3 = os.path.join(TOPIC_TEMP_DIR, "voice.mp3")
         cmd_tts = [
             "edge-tts", "--text", FULL_SPEECH_TEXT, "--voice", VOICE_ID,
             "--write-media", voice_mp3
