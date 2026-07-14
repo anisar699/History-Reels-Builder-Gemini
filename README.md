@@ -1,66 +1,85 @@
-# History Reels Builder 🎥✨
+# History Reels Builder — Premium AI Shorts Auto-Pilot Dashboard 🎥✨
 
-An AI-powered automated video compiler designed for generating historical, educational, and mysterious vertical shorts (reels/TikToks) with Urdu script narration, authentic Nastaliq subtitles, and relevant stock video transitions.
+An advanced, feature-rich auto-pilot compilation pipeline designed for generating premium vertical short documentaries (9:16 reels/TikToks/Shorts). This system integrates custom Urdu voiceover narration (via Edge-TTS), authentic right-to-left Nastaliq subtitles, dynamic background music mixing, and keyless search/scrapers to build ready-to-publish history assets in seconds.
 
----
-
-## Features 🚀
-- **1-Click AI Reel Generator:** Just provide a topic (e.g. `--topic "Pyramids of Giza"`), and the script automatically writes the Urdu voiceover, drafts slide captions, generates matching video queries, and builds the reel.
-- **Urdu Nastaliq Subtitles:** Uses `NotoNastaliqUrdu` font to draw beautiful, authentic, right-to-left Urdu subtitles.
-- **Natural Voiceover (Edge-TTS):** Generates voiceovers using standard Pakistani Urdu narrator (`ur-PK-AsadNeural`) with custom diacritics to ensure perfect pronunciation of tricky Urdu words (like `کِیا`).
-- **Dynamic Stock Footage:** Searches Pexels and Pixabay APIs automatically to download high-resolution portrait video clips matching each sentence.
-- **Seamless Audio Mixing:** Crossfades video clips smoothly and merges background music loops with the voiceover track.
+Now features a beautiful Streamlit visual control dashboard and 6+ flexible script structuring methods to prevent API quota bottlenecks.
 
 ---
 
-## Setup & Prerequisites 🛠️
+## Key Features 🚀
 
-### 1. Install System Tools
-Make sure **Python 3.10+** and **FFmpeg** are installed on your computer and added to your system's PATH.
+### 1. 🖥️ Interactive Streamlit Dashboard
+* **Visual Progress Console:** Watch stock media search, voice rendering, and FFmpeg video merging logs live on screen.
+* **API Keys Manager:** Configure and reload Pexels, Pixabay, Gemini, OpenAI, Groq, and OpenRouter API keys dynamically.
+* **Output Gallery:** Browse, play, and copy the corresponding SEO text packages (optimized description, tags, hashtags) of compiled reels directly from the dashboard.
 
-On Windows, you can install FFmpeg via PowerShell:
+### 2. 📝 6 Flexible Generation Methods (To bypass API quota limits)
+* **Single Video Mode:** Provide a simple historical topic, and the system does everything.
+* **Batch Videos Mode:** Input comma-separated topics list to generate multiple reels sequentially.
+* **Automated News Scraping:** Scrape XML RSS feeds (e.g. BBC Urdu, Dawn) or direct web article links. The system cleans HTML paragraphs and structures the video from live content.
+* **CSV/Excel Batch Upload:** Upload spreadsheets (`.csv` or `.xlsx`) to bulk-compile scripts (supports both simple topic lists and pre-written custom subtitles/voiceovers).
+* **Manual AI Script (Paste & Struct):** Paste a raw narrative story paragraph, and the AI automatically splits it into 4 timed slides, formats captions, and matches queries.
+* **Manual Script Input (100% Free):** Directly write subtitles, voiceover lines, music vibe, and search queries manually. Bypasses LLMs entirely (Zero cost, no API keys required!).
+
+### 3. 🎥 Smart Media Priority & Ken Burns Zoompan
+* Select preference: **Mixed (Videos + Images)**, **Videos Only**, or **Images Only**.
+* If **Images Only** or fallback images are used, the engine applies a cinematic vertical Ken Burns crop-scale-and-pan filter graph (`scale=1440:2560` and custom FFmpeg `zoompan`) to create premium motion animations from static retro history pictures.
+
+### 4. 🔗 Keyless Stock Media Scrapers
+* Integrates free search scrapers for **Bing Images** and public **Pinterest Pins** to download background media when stock API limits are reached.
+
+---
+
+## Setup & Installation 🛠️
+
+### 1. Install System Dependencies
+Ensure **Python 3.10+** and **FFmpeg** are installed and added to your system PATH environment variables.
+
+* **On Windows (via PowerShell):**
+  ```powershell
+  winget install Gyan.FFmpeg
+  ```
+
+### 2. Install Python Packages
+Install all project requirements:
 ```powershell
-winget install Gyan.FFmpeg
+pip install -r requirements.txt
 ```
 
-### 2. Install Python Libraries
-Run the following command to install all required dependencies:
-```powershell
-pip install pillow requests edge-tts
-```
-
-### 3. Setup Folders
-Create the following directory structure in your user's **Pictures** folder:
-```
-Pictures/
-└── history videos/
-    ├── bg_music/    # Add your looping mystery/sad/epic tracks (e.g., mystery_1.mp3, mystery_2.mp3)
-    └── fonts/       # Place the NotoNastaliqUrdu-Bold.ttf font here
+### 3. Folder Setup
+Create these folders in your Windows user's **Pictures** folder:
+```text
+C:/Users/<Username>/Pictures/history videos/
+├── bg_music/       # Add looping mystery_1.mp3, epic_2.mp3, etc.
+└── fonts/          # Place the NotoNastaliqUrdu-Bold.ttf font file here
 ```
 
 ---
 
-## How to Run 💻
+## Running the Dashboard 💻
 
-### Option A: Fully Automated AI Mode (Recommended)
-Run the script and provide the topic using the `--topic` flag. The script will query OpenAI (using your API key) to write the script and download Pexels videos:
+Double-click the **`Gemini Reels Dashboard.lnk`** shortcut on your desktop, or run the following command in the project directory:
 ```powershell
-python build_reel.py --topic "Pyramids of Giza"
+streamlit run app.py
 ```
 
-### Option B: Interactive Mode
-Run the script without arguments. It will prompt you in the console:
+### Command Line Interface (CLI)
+You can also trigger batch jobs directly via the terminal:
 ```powershell
-python build_reel.py
-# Prompt: Enter video topic (e.g. Pyramids of Giza):
-```
+# Generate via Gemini
+python build_reel.py --topic "Taj Mahal History" --provider gemini
 
-The compiled video and corresponding SEO metadata package (title, description, tags) will be saved in your `Pictures/history videos/` folder.
+# Generate offline via local Ollama
+python build_reel.py --topic "Roman Empire" --provider ollama
+
+# Generate from Web Scraper
+python build_reel.py --news-url "https://feeds.bbci.co.uk/urdu/rss.xml" --provider groq
+
+# Generate from CSV file
+python build_reel.py --csv "batch_scripts.csv" --provider openrouter
+```
 
 ---
 
-## Customizing Configurations
-At the top of `build_reel.py`, you can configure:
-- **API Keys:** Add your Pexels, Pixabay, or OpenAI API keys.
-- **Voices:** Change default voice (`ur-PK-AsadNeural` or other Edge-TTS voices).
-- **Background Music Vibes:** Map vibes (`mystery`, `epic`, `sad`, `ancient`) to matching track indexes.
+## ℹ️ Configuration & API Help
+Open the **Tool Help/Guide** tab inside the running Streamlit dashboard for a detailed Hinglish/Roman Urdu walkthrough on how to generate free API keys for Pexels, Pixabay, Gemini, Groq, OpenRouter, and setting up local offline **Ollama** models.
