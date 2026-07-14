@@ -60,6 +60,18 @@ FULL_SPEECH_TEXT = (
     "کِیا دو ہزار سال پہلے کے انسانوں کے پاس بجلی کی ٹیکنالوجی موجود تھی؟ کمنٹس میں اپنی رائے کا اظہار کریں۔"
 )
 
+# Default SEO Configuration (Fallback for Baghdad Battery)
+SEO_TITLE = "The Baghdad Battery — The 2,000-Year-Old Battery 🏺⚡"
+SEO_DESCRIPTION = """1936 mein, Baghdad ke qareeb se ek qadeem mitti ka bartan mila, jise Baghdad Battery kaha jata hai.
+
+کیا آپ جانتے ہیں کہ دنیا کی پہلی بیٹری دو ہزار سال پہلے بنائی گئی تھی؟ اس برتن کے اندر تانبے کا سلنڈر اور لوہے کی راڈ موجود تھی۔ 
+
+جب اس میں سرکہ یا لیموں کا رس ڈالا گیا، تو اس نے بجلی پیدا کی! کیا دو ہزار سال پہلے کے انسانوں کے پاس بجلی کی ٹیکنالوجی موجود تھی؟ یا یہ محض ایک اتفاق تھا؟
+
+Comments mein apni rai ka izhaar karein!"""
+SEO_HASHTAGS = "#History #BaghdadBattery #UrduHistory #Mysteries #Unsolved #HistoricalFacts #ReelsPakistan #HistoryBuff #AncientTechnology #ScienceMysteries #UrduScript"
+SEO_SHORT_CAPTION = "Baghdad Battery 2000 saal purani hai aur isne sach mein electricity generate ki thi. Qadeem technology ya ittefaq? #History #Urdu #Mysteries"
+
 # Search queries for the 8 shots (closely matching the script sentences)
 QUERIES = [
     "clay jar",
@@ -166,7 +178,11 @@ def fetch_ai_script(topic):
         "  \"full_speech_text\": \"The complete Urdu narration text to be spoken. Keep it around 30-40 seconds long, highly engaging. Make sure to use 'کِیا' (with Zer diacritic) instead of standard 'کیا' to ensure perfect pronunciation.\",\n"
         "  \"queries\": [\n"
         "    \"8 specific search queries (only list exactly 8 queries) for Pexels stock video matching the script flow, e.g. ['giza plateau', 'desert pyramids', 'ancient stone blocks', 'workers building', 'pharaoh statue', 'camel walking', 'ancient map', 'sunset pyramids']\"\n"
-        "  ]\n"
+        "  ],\n"
+        "  \"seo_title\": \"Hook/Title for social media (e.g., Pyramids of Giza — Secrets of the Pharaohs 🏺✨)\",\n"
+        "  \"seo_description\": \"Detailed social media caption containing Roman Urdu narrative summary and Urdu script summary\",\n"
+        "  \"seo_hashtags\": \"Space-separated string of 8-12 relevant hashtags (e.g., '#History #GizaPyramids #Egypt #UrduMysteries')\",\n"
+        "  \"seo_short_caption\": \"A short punchy caption for quick copy-paste\"\n"
         "}"
     )
     
@@ -501,26 +517,20 @@ SEO PACKAGE — Facebook + Instagram (Urdu Script + Custom Music)
 ================================================================================
 
 TITLE / HOOK:
-{TOPIC_TITLE} — The 2,000-Year-Old Battery 🏺⚡
+{SEO_TITLE}
 
 --------------------------------------------------------------------------------
 PRIMARY CAPTION (for Instagram/Facebook feed)
 --------------------------------------------------------------------------------
-1936 mein, Baghdad ke qareeb se ek qadeem mitti ka bartan mila, jise Baghdad Battery kaha jata hai.
-
-کیا آپ جانتے ہیں کہ دنیا کی پہلی بیٹری دو ہزار سال پہلے بنائی گئی تھی؟ اس برتن کے اندر تانبے کا سلنڈر اور لوہے کی راڈ موجود تھی۔ 
-
-جب اس میں سرکہ یا لیموں کا رس ڈالا گیا، تو اس نے بجلی پیدا کی! کیا دو ہزار سال پہلے کے انسانوں کے پاس بجلی کی ٹیکنالوجی موجود تھی؟ یا یہ محض ایک اتفاق تھا؟
-
-Comments mein apni rai ka izhaar karein!
+{SEO_DESCRIPTION}
 
 HASHTAGS:
-#History #BaghdadBattery #UrduHistory #Mysteries #Unsolved #HistoricalFacts #ReelsPakistan #HistoryBuff #AncientTechnology #ScienceMysteries #UrduScript
+{SEO_HASHTAGS}
 
 --------------------------------------------------------------------------------
 QUICK CAPTION (copy-paste short version)
 --------------------------------------------------------------------------------
-Baghdad Battery 2000 saal purani hai aur isne sach mein electricity generate ki thi. Qadeem technology ya ittefaq? #History #Urdu #Mysteries
+{SEO_SHORT_CAPTION}
 
 --------------------------------------------------------------------------------
 MEDIA + MUSIC NOTES
@@ -566,6 +576,7 @@ def generate_video_for_topic(topic):
     global TOPIC_TITLE, TOPIC_YEAR, OUTPUT_NAME, BG_MUSIC_VIBE, BG_MUSIC_TRACK_INDEX
     global CAPTION_TEXT_1, CAPTION_TEXT_2, CAPTION_TEXT_3, CAPTION_TEXT_4
     global FULL_SPEECH_TEXT, QUERIES, NUM_CLIPS
+    global SEO_TITLE, SEO_DESCRIPTION, SEO_HASHTAGS, SEO_SHORT_CAPTION
 
     if topic and topic.strip() != "":
         print(f"\n--- Generating Video for Topic: '{topic}' ---")
@@ -590,6 +601,12 @@ def generate_video_for_topic(topic):
             FULL_SPEECH_TEXT = ai_data["full_speech_text"]
             QUERIES = ai_data["queries"]
             NUM_CLIPS = len(QUERIES)
+            
+            # Override SEO variables dynamically
+            SEO_TITLE = ai_data.get("seo_title", f"{TOPIC_TITLE} ({TOPIC_YEAR})")
+            SEO_DESCRIPTION = ai_data.get("seo_description", FULL_SPEECH_TEXT)
+            SEO_HASHTAGS = ai_data.get("seo_hashtags", "#History #UrduMysteries")
+            SEO_SHORT_CAPTION = ai_data.get("seo_short_caption", FULL_SPEECH_TEXT[:100])
             
             print("\n=== AI Generated Script & Config ===")
             print(f"Title: {TOPIC_TITLE} ({TOPIC_YEAR})")
