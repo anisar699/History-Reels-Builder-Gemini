@@ -109,20 +109,38 @@ with st.sidebar:
     )
     
     st.markdown("---")
-    st.markdown("<div class='widget-title'>🔑 API KEYS (Loaded from .env)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='widget-title'>🔑 API KEYS CONFIGURATION</div>", unsafe_allow_html=True)
     
-    # Check key statuses
-    keys = {
-        "Gemini API Key": config.GEMINI_API_KEY,
-        "OpenAI API Key": config.OPENAI_API_KEY,
-        "Pexels API Key": config.PEXELS_API_KEY,
-        "Pixabay API Key": config.PIXABAY_API_KEY
-    }
-    for key_name, val in keys.items():
-        if val:
-            st.success(f"✔️ {key_name} Active")
-        else:
-            st.error(f"❌ {key_name} Missing")
+    new_gemini = st.text_input("Gemini API Key", value=config.GEMINI_API_KEY or "", type="password")
+    new_openai = st.text_input("OpenAI API Key", value=config.OPENAI_API_KEY or "", type="password")
+    new_pexels = st.text_input("Pexels API Key", value=config.PEXELS_API_KEY or "", type="password")
+    new_pixabay = st.text_input("Pixabay API Key", value=config.PIXABAY_API_KEY or "", type="password")
+    
+    if st.button("Save & Reload Keys 💾", use_container_width=True):
+        # Update local .env file in the workspace root
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        env_content = f"""PEXELS_API_KEY={new_pexels.strip()}
+PIXABAY_API_KEY={new_pixabay.strip()}
+OPENAI_API_KEY={new_openai.strip()}
+GEMINI_API_KEY={new_gemini.strip()}
+"""
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write(env_content)
+            
+        # Update config singleton attributes instantly
+        config.GEMINI_API_KEY = new_gemini.strip()
+        config.OPENAI_API_KEY = new_openai.strip()
+        config.PEXELS_API_KEY = new_pexels.strip()
+        config.PIXABAY_API_KEY = new_pixabay.strip()
+        
+        # Update os.environ
+        os.environ["GEMINI_API_KEY"] = new_gemini.strip()
+        os.environ["OPENAI_API_KEY"] = new_openai.strip()
+        os.environ["PEXELS_API_KEY"] = new_pexels.strip()
+        os.environ["PIXABAY_API_KEY"] = new_pixabay.strip()
+        
+        st.toast("API Keys saved to .env & reloaded!", icon="💾")
+        st.rerun()
 
 tabs = st.tabs(["🚀 Generate Videos", "📂 View Gallery Output"])
 
