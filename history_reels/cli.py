@@ -215,7 +215,7 @@ def main():
         
         print(f"Loaded {len(df)} rows from file. Starting batch generation...")
         for idx, row in df.iterrows():
-            row_dict = row.to_dict()
+            row_dict = {k.lower(): v for k, v in row.to_dict().items()}
             if has_script_cols:
                 queries_val = row_dict.get("queries", "")
                 if pd.isna(queries_val):
@@ -249,10 +249,10 @@ def main():
                 topic_col = None
                 for c in df.columns:
                     if c.lower() in ["topic", "topic_title", "title", "name"]:
-                        topic_col = c
+                        topic_col = c.lower()
                         break
                 if not topic_col:
-                    topic_col = df.columns[0]
+                    topic_col = df.columns[0].lower()
                 topic_val = str(row_dict[topic_col]).strip()
                 print(f"\nProcessing topic row {idx+1}/{len(df)}: '{topic_val}'")
                 generate_video_for_topic(topic_val, provider=provider)
