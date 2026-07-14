@@ -17,9 +17,95 @@ for mod in list(sys.modules.keys()):
 from history_reels import config
 from history_reels.cli import generate_video_for_topic
 
+@st.cache_data
+def get_edge_tts_voices():
+    flag_map = {
+        "ur-PK": "🇵🇰 Urdu (Pakistan)",
+        "ur-IN": "🇮🇳 Urdu (India)",
+        "en-US": "🇺🇸 English (US)",
+        "en-GB": "🇬🇧 English (UK)",
+        "en-AU": "🇦🇺 English (Australia)",
+        "en-CA": "🇨🇦 English (Canada)",
+        "en-IN": "🇮🇳 English (India)",
+        "hi-IN": "🇮🇳 Hindi (India)",
+    }
+    lang_codes = {
+        "ar": "Arabic", "es": "Spanish", "fr": "French", "de": "German", 
+        "it": "Italian", "ja": "Japanese", "ko": "Korean", "pt": "Portuguese", 
+        "ru": "Russian", "tr": "Turkish", "zh": "Chinese", "vi": "Vietnamese",
+        "th": "Thai", "sv": "Swedish", "nl": "Dutch", "pl": "Polish"
+    }
+    recommended_voices = {
+        "ur-PK-AsadNeural", "ur-PK-UzmaNeural",
+        "en-US-GuyNeural", "en-US-AriaNeural", "en-US-JennyNeural",
+        "en-GB-RyanNeural", "en-GB-SoniaNeural"
+    }
+
+    def format_display_name(voice_name, gender):
+        prefix = "-".join(voice_name.split("-")[:2])
+        raw_name = voice_name.split("-")[-1].replace("Neural", "")
+        display = ""
+        if prefix in flag_map:
+            display = f"{flag_map[prefix]} - {raw_name} ({gender})"
+        else:
+            lang_prefix = voice_name.split("-")[0]
+            lang_name = lang_codes.get(lang_prefix, lang_prefix.upper())
+            display = f"🌍 {lang_name} ({prefix}) - {raw_name} ({gender})"
+            
+        if voice_name in recommended_voices:
+            display += " (Recommended) ★"
+        return display
+
+    try:
+        import subprocess
+        res = subprocess.run(["edge-tts", "--list-voices"], capture_output=True, text=True, check=True)
+        lines = res.stdout.strip().split("\n")
+        voices = []
+        for line in lines:
+            parts = line.split()
+            if parts and ("Neural" in parts[0] or "-" in parts[0]):
+                voice_name = parts[0]
+                gender = parts[1] if len(parts) > 1 else "Unknown"
+                voices.append((voice_name, gender))
+    except Exception as e:
+        print(f"Error fetching edge-tts voices: {e}")
+        voices = [
+            ("ur-PK-AsadNeural", "Male"),
+            ("ur-PK-UzmaNeural", "Female"),
+            ("ur-IN-SalmanNeural", "Male"),
+            ("ur-IN-GulNeural", "Female"),
+            ("en-US-GuyNeural", "Male"),
+            ("en-US-AriaNeural", "Female"),
+            ("en-GB-SoniaNeural", "Female"),
+            ("en-GB-RyanNeural", "Male")
+        ]
+
+    structured_voices = []
+    for v_id, gender in voices:
+        display_str = format_display_name(v_id, gender)
+        structured_voices.append({
+            "id": v_id,
+            "display": display_str
+        })
+
+    def get_sort_key(v):
+        v_id = v["id"]
+        if "ur-" in v_id:
+            if v_id in recommended_voices:
+                return (0, 0, v_id)
+            return (0, 1, v_id)
+        elif "en-" in v_id:
+            if v_id in recommended_voices:
+                return (1, 0, v_id)
+            return (1, 1, v_id)
+        return (2, 0, v_id)
+
+    structured_voices.sort(key=get_sort_key)
+    return structured_voices
+
 # Streamlit Page Config
 st.set_page_config(
-    page_title="History Reels Auto-Pilot UI",
+    page_title="AI CONTENT ENGINE",
     page_icon="🎥",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -93,7 +179,7 @@ def redirect_stdout_to_streamlit(placeholder):
         sys.stderr = original_stderr
 
 # Main Layout
-st.markdown("<h1 class='main-title'>🎥 HISTORY REELS AUTO-PILOT UI</h1>", unsafe_allow_html=True)
+st.markdown("<h1 class='main-title'>🎥 AI CONTENT ENGINE</h1>", unsafe_allow_html=True)
 st.markdown("<p class='subtitle'>Generate premium short-form historical reels with Urdu script & AI Voiceovers in 1 click.</p>", unsafe_allow_html=True)
 
 # Sidebar Control Panel
@@ -131,6 +217,39 @@ with st.sidebar:
     }
     config.MEDIA_PREFERENCE = pref_mapping[media_selection]
     
+    size_preset = st.selectbox(
+        "Video Size / Aspect Ratio",
+        options=["Vertical (9:16) - Reels/TikTok", "Landscape (16:9) - YouTube", "Square (1:1) - Post"],
+        index=0,
+        help="Select the aspect ratio and frame size preset for compiled videos."
+    )
+    size_map = {
+        "Vertical (9:16) - Reels/TikTok": (720, 1280),
+        "Landscape (16:9) - YouTube": (1280, 720),
+        "Square (1:1) - Post": (1080, 1080)
+    }
+    config.VIDEO_WIDTH, config.VIDEO_HEIGHT = size_map[size_preset]
+    
+    duration_preset = st.selectbox(
+        "Video Duration Preset",
+        options=["Free (Auto)", "10 seconds", "20 seconds", "30 seconds", "45 seconds", "60 seconds", "2 minutes", "3 minutes", "5 minutes", "10 minutes"],
+        index=0,
+        help="Specify the target duration preset for the final compiled video reel."
+    )
+    preset_map = {
+        "Free (Auto)": None,
+        "10 seconds": 10,
+        "20 seconds": 20,
+        "30 seconds": 30,
+        "45 seconds": 45,
+        "60 seconds": 60,
+        "2 minutes": 120,
+        "3 minutes": 180,
+        "5 minutes": 300,
+        "10 minutes": 600
+    }
+    config.TARGET_DURATION = preset_map[duration_preset]
+    
     voice_provider = st.selectbox(
         "Voice Narrator Provider",
         options=["Edge-TTS (Free)", "ElevenLabs (Realistic)"],
@@ -146,6 +265,22 @@ with st.sidebar:
         )
     else:
         config.VOICE_PROVIDER = "edge-tts"
+        voices_list = get_edge_tts_voices()
+        voice_options = [v["display"] for v in voices_list]
+        default_voice = getattr(config, "VOICE_ID", "ur-PK-AsadNeural")
+        default_index = 0
+        for idx, v in enumerate(voices_list):
+            if v["id"] == default_voice:
+                default_index = idx
+                break
+        selected_display = st.selectbox(
+            "Microsoft Edge Voice Narrator",
+            options=voice_options,
+            index=default_index,
+            help="Select the Microsoft Edge narrator voice for voiceovers."
+        )
+        selected_voice_id = next(v["id"] for v in voices_list if v["display"] == selected_display)
+        config.VOICE_ID = selected_voice_id
         
     st.markdown("---")
     st.markdown("<div class='widget-title'>🔑 API KEYS CONFIGURATION</div>", unsafe_allow_html=True)
@@ -697,9 +832,25 @@ with tabs[2]:
 
     with sub_tabs[2]:
         st.markdown("### ⚙️ Sidebar Controls & Customizations (Extra Settings)")
-        st.write("Apni reels ki content priority aur styling customize karne ke liye settings panels configure karein:")
+        st.write("Apni content priority, size ratio, aur video duration customize karne ke liye settings panels configure karein:")
 
-        with st.expander("🤖 AI Content Provider Selector", expanded=True):
+        with st.expander("📐 Video Size / Aspect Ratio Selector", expanded=True):
+            st.markdown("""
+            **Description:** Video ke visual shape aur dimensions ko select karne ke liye:
+            * `Vertical (9:16) - Reels/TikTok`: **720x1280** resolution. Subtitles vertical screens ke center region main clean align hote hain.
+            * `Landscape (16:9) - YouTube`: **1280x720** resolution. Subtitles screen ke bottom lower-third main properly adjust ho jate hain.
+            * `Square (1:1) - Post`: **1080x1080** resolution. Subtitles standard post size lower-third main render hote hain.
+            """)
+
+        with st.expander("⏱️ Video Duration Preset Selector", expanded=False):
+            st.markdown("""
+            **Description:** Target compiled video duration define karne ke liye presets:
+            * Options list main **10s / 20s / 30s / 45s / 60s** (Shorts/Reels) aur **2m / 3m / 5m / 10m** (Longer videos) ke presets shamil hain.
+            * **Prompt Scale:** AI script generator target seconds ke according details aur word limits automatic write-up main use karega.
+            * **Safety Pad Protection:** Agar spoken audio duration selected preset se thodi kam reh jaye, to system automatically Slide 4 (last call-to-action) ki duration pad kar ke complete preset time video ensure karega bina kisi crash ya glitch ke.
+            """)
+
+        with st.expander("🤖 AI Content Provider Selector", expanded=False):
             st.markdown("""
             **Description:** Chunain ke script generation or parsing ka logic kaun handle karega.
             * `gemini`: Google Gemini 2.0 Flash (Fast & reliable).

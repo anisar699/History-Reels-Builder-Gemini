@@ -91,6 +91,9 @@ SLIDE_TIMINGS = []
 DOWNLOADED_VIDEO_IDS = set()
 VIDEO_ATTRIBUTIONS = []
 MEDIA_PREFERENCE = "mixed"
+TARGET_DURATION = None
+VIDEO_WIDTH = 720
+VIDEO_HEIGHT = 1280
 
 def check_system_dependencies():
     """Verify that FFmpeg and edge-tts are available in PATH."""

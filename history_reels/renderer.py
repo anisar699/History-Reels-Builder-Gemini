@@ -31,24 +31,25 @@ def build_video_frames(voice_dur):
         if os.path.exists(raw_path_mp4):
             # Process Video Clip
             w, h = get_video_dimensions(raw_path_mp4)
-            if (w / h) > (9 / 16):
+            target_aspect = config.VIDEO_WIDTH / config.VIDEO_HEIGHT
+            if (w / h) > target_aspect:
                 crop_h = h
-                crop_w = int(h * 9 / 16)
+                crop_w = int(h * target_aspect)
                 if crop_w % 2 != 0:
                     crop_w += 1
                 offset_x = (w - crop_w) // 2
                 offset_y = 0
             else:
                 crop_w = w
-                crop_h = int(w * 16 / 9)
+                crop_h = int(w / target_aspect)
                 if crop_h % 2 != 0:
                     crop_h += 1
                 offset_x = 0
                 offset_y = (h - crop_h) // 2
                 
-            vf = f"crop={crop_w}:{crop_h}:{offset_x}:{offset_y},scale=720:1280"
+            vf = f"crop={crop_w}:{crop_h}:{offset_x}:{offset_y},scale={config.VIDEO_WIDTH}:{config.VIDEO_HEIGHT}"
             cmd = [
-                "ffmpeg", "-y", "-ss", "0.0", "-i", raw_path_mp4, "-t", f"{clip_dur:.3f}",
+                "ffmpeg", "-y", "-ss", "0.0", "-stream_loop", "-1", "-i", raw_path_mp4, "-t", f"{clip_dur:.3f}",
                 "-vf", vf, "-an", "-r", str(config.FPS), clip_path
             ]
             subprocess.run(cmd, check=True)
@@ -59,9 +60,9 @@ def build_video_frames(voice_dur):
             if not os.path.exists(img_path):
                 raise FileNotFoundError(f"Error: No video or image clip found for index {i}")
                 
-            # Scale up to 1440:2560 before zoompan to ensure crisp resolution during slow zoom
-            dur_frames = int(clip_dur * config.FPS)
-            vf_zoom = f"scale=1440:2560,zoompan=z='zoom+0.0005':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={dur_frames}:s=720x1280"
+            scale_w = int(config.VIDEO_WIDTH * 2)
+            scale_h = int(config.VIDEO_HEIGHT * 2)
+            vf_zoom = f"scale={scale_w}:{scale_h},zoompan=z='zoom+0.0005':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={config.VIDEO_WIDTH}x{config.VIDEO_HEIGHT},fps={config.FPS}"
             cmd = [
                 "ffmpeg", "-y", "-loop", "1", "-i", img_path, "-t", f"{clip_dur:.3f}",
                 "-vf", vf_zoom, "-an", "-r", str(config.FPS), clip_path

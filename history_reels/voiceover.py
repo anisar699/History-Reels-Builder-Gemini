@@ -51,8 +51,11 @@ def generate_voiceover():
             with open(seg_path, "wb") as f:
                 f.write(response.content)
         else:
+            temp_txt_path = os.path.join(config.TOPIC_TEMP_DIR, f"voice_text_{idx}.txt")
+            with open(temp_txt_path, "w", encoding="utf-8") as f:
+                f.write(text)
             cmd_tts = [
-                "edge-tts", "--text", text, "--voice", config.VOICE_ID,
+                "edge-tts", "--file", temp_txt_path, "--voice", config.VOICE_ID,
                 "--write-media", seg_path
             ]
             subprocess.run(cmd_tts, check=True)
@@ -62,6 +65,15 @@ def generate_voiceover():
         durations.append(dur)
         print(f"Segment {idx} duration: {dur:.2f} seconds.")
         
+    # Check if target duration preset is specified, and pad the last slide if narration is shorter
+    target_dur = getattr(config, "TARGET_DURATION", None)
+    if target_dur:
+        voice_dur = sum(durations)
+        if voice_dur < target_dur:
+            needed_pad = target_dur - voice_dur
+            durations[3] += needed_pad
+            print(f"Padding slide 4 duration by {needed_pad:.2f}s to meet the {target_dur}s preset.")
+
     # Update global timings
     config.SLIDE_TIMINGS = [
         durations[0],

@@ -64,17 +64,29 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
         "}"
     )
 
+    target_dur = getattr(config, "TARGET_DURATION", None)
+    dur_guidelines = ""
+    if target_dur:
+        slide_dur = target_dur / 4.0
+        word_count = int(slide_dur * 2.3)
+        dur_guidelines = (
+            f" IMPORTANT: The user requested a video duration preset of exactly {target_dur} seconds. "
+            f"Therefore, you MUST generate slide narration texts that are long and detailed enough so that the total read-aloud "
+            f"duration of all slides combined matches this duration. Specifically, the Urdu narration for each of the 4 slides "
+            f"should contain approximately {word_count} words and take around {slide_dur:.1f} seconds to read out loud."
+        )
+
     if is_raw_script:
         system_prompt = (
             "You are an expert short-form video producer. Your task is to take the provided raw narrative script (which can be in Urdu, English, or Roman Urdu) "
             "and format/split it into exactly 4 logical slides matching the required JSON format. Ensure caption_texts are in Nastaliq-friendly Urdu. "
-            f"The output must strictly follow this JSON schema:\n{schema_details}"
+            f"{dur_guidelines} The output must strictly follow this JSON schema:\n{schema_details}"
         )
         user_prompt = f"Structure this raw script text into the JSON format:\n{topic}"
     else:
         system_prompt = (
             "You are an expert history documentary scriptwriter. Generate script configuration for Urdu short reels in JSON format. "
-            f"The output must strictly follow this JSON schema:\n{schema_details}"
+            f"{dur_guidelines} The output must strictly follow this JSON schema:\n{schema_details}"
         )
         user_prompt = f"Generate script configuration in valid JSON format for topic: {topic}"
 
