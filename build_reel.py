@@ -16,6 +16,7 @@ load_dotenv()
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
 PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # Directories
 HOME = os.path.expanduser("~")
@@ -155,16 +156,7 @@ def download_clip_for_query(query, index):
 
     return False
 
-def fetch_ai_script(topic):
-    print(f"Calling OpenAI GPT-4o-mini to auto-generate script for topic: '{topic}'...")
-    if not OPENAI_API_KEY:
-        raise ValueError("Error: OPENAI_API_KEY environment variable is not set. Please set it in your .env file.")
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
+def fetch_ai_script(topic, provider="gemini"):
     system_prompt = (
         "You are an expert history documentary scriptwriter. Generate script configuration for Urdu short reels in JSON format. "
         "The output must strictly follow this JSON schema:\n"
@@ -186,21 +178,62 @@ def fetch_ai_script(topic):
         "  \"seo_short_caption\": \"A short punchy caption for quick copy-paste\"\n"
         "}"
     )
-    
-    payload = {
-        "model": "gpt-4o-mini",
-        "response_format": { "type": "json_object" },
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Topic: {topic}"}
-        ]
-    }
-    
-    response = requests.post(url, headers=headers, json=payload, timeout=30)
-    response.raise_for_status()
-    result = response.json()
-    content = result["choices"][0]["message"]["content"]
-    return json.loads(content)
+
+    if provider == "gemini":
+        print(f"Calling Google Gemini 1.5 Flash to auto-generate script for topic: '{topic}'...")
+        if not GEMINI_API_KEY:
+            raise ValueError("Error: GEMINI_API_KEY environment variable is not set. Please set it in your .env file.")
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        headers = {"Content-Type": "application/json"}
+        prompt_text = f"{system_prompt}\n\nGenerate script configuration in valid JSON format for topic: {topic}"
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt_text}
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "responseMimeType": "application/json"
+            }
+        }
+        
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+        
+        try:
+            raw_text = result["candidates"][0]["content"]["parts"][0]["text"]
+            return json.loads(raw_text)
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            raise ValueError(f"Failed to parse Gemini API JSON response: {e}. Raw response: {result}")
+            
+    else:
+        print(f"Calling OpenAI GPT-4o-mini to auto-generate script for topic: '{topic}'...")
+        if not OPENAI_API_KEY:
+            raise ValueError("Error: OPENAI_API_KEY environment variable is not set. Please set it in your .env file.")
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "gpt-4o-mini",
+            "response_format": { "type": "json_object" },
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Topic: {topic}"}
+            ]
+        }
+        
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+        content = result["choices"][0]["message"]["content"]
+        return json.loads(content)
 
 def ensure_assets():
     # Make sure target directories exist
@@ -562,7 +595,7 @@ def cleanup():
         except Exception as e:
             print(f"Cleanup warning: {e}")
 
-def generate_video_for_topic(topic):
+def generate_video_for_topic(topic, provider="gemini"):
     global TOPIC_TITLE, TOPIC_YEAR, OUTPUT_NAME, BG_MUSIC_VIBE, BG_MUSIC_TRACK_INDEX
     global CAPTION_TEXT_1, CAPTION_TEXT_2, CAPTION_TEXT_3, CAPTION_TEXT_4
     global FULL_SPEECH_TEXT, QUERIES, NUM_CLIPS
@@ -570,9 +603,9 @@ def generate_video_for_topic(topic):
     global TOPIC_TEMP_DIR
 
     if topic and topic.strip() != "":
-        print(f"\n--- Generating Video for Topic: '{topic}' ---")
+        print(f"\n--- Generating Video for Topic: '{topic}' ({provider.upper()}) ---")
         try:
-            ai_data = fetch_ai_script(topic)
+            ai_data = fetch_ai_script(topic, provider=provider)
             
             # Override global configuration variables
             TOPIC_TITLE = ai_data["title"]
@@ -660,6 +693,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI Short Reel Generator")
     parser.add_argument("--topic", type=str, help="Single topic for the video")
     parser.add_argument("--batch", type=str, help="Path to batch topics txt file")
+    parser.add_argument("--provider", type=str, choices=["openai", "gemini"], default="gemini", help="AI provider (openai or gemini)")
     args = parser.parse_args()
 
     # 1. Populate topics list
@@ -716,7 +750,7 @@ if __name__ == "__main__":
             print(f" PROCESSING TOPIC {i}/{len(topics)}: {t}")
             print(f"========================================")
             
-        res = generate_video_for_topic(t)
+        res = generate_video_for_topic(t, provider=args.provider)
         if res:
             success_count += 1
         else:
