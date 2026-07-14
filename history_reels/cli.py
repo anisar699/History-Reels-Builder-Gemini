@@ -99,15 +99,19 @@ def cleanup():
         except Exception as e:
             print(f"Cleanup warning: {e}")
 
-def generate_video_for_topic(topic, provider="gemini"):
+def generate_video_for_topic(topic, provider="gemini", manual_script_data=None, is_raw_script=False):
     # Clear tracking sets/lists for this specific generation run
     config.DOWNLOADED_VIDEO_IDS.clear()
     config.VIDEO_ATTRIBUTIONS.clear()
 
-    if topic and topic.strip() != "":
-        print(f"\n--- Generating Video for Topic: '{topic}' ({provider.upper()}) ---")
+    if (topic and topic.strip() != "") or manual_script_data:
+        print(f"\n--- Generating Video (Manual/API Mode) ---")
         try:
-            ai_data = fetch_ai_script(topic, provider=provider)
+            if manual_script_data:
+                print("Using manually entered script configuration...")
+                ai_data = manual_script_data
+            else:
+                ai_data = fetch_ai_script(topic, provider=provider, is_raw_script=is_raw_script)
             
             # Override configuration variables
             config.TOPIC_TITLE = ai_data["title"]
@@ -188,12 +192,92 @@ def main():
     parser = argparse.ArgumentParser(description="AI Short Reel Generator")
     parser.add_argument("--topic", type=str, help="Single topic for the video")
     parser.add_argument("--batch", type=str, help="Path to batch topics txt file")
-    parser.add_argument("--provider", type=str, choices=["openai", "gemini"], default="gemini", help="AI provider (openai or gemini)")
+    parser.add_argument("--news-url", type=str, help="Scrape news/article URL or RSS feed to generate reel")
+    parser.add_argument("--csv", type=str, help="Path to CSV or Excel batch file")
+    parser.add_argument("--provider", type=str, choices=["openai", "gemini", "groq", "ollama", "openrouter"], default="gemini", help="AI provider (openai, gemini, groq, ollama, or openrouter)")
     args = parser.parse_args()
 
     provider = args.provider
     
-    if args.topic:
+    if args.csv:
+        import pandas as pd
+        csv_path = args.csv
+        if not os.path.exists(csv_path):
+            print(f"Error: Batch file '{csv_path}' not found.")
+            sys.exit(1)
+        if csv_path.endswith(".csv"):
+            df = pd.read_csv(csv_path)
+        else:
+            df = pd.read_excel(csv_path)
+            
+        cols = [c.lower() for c in df.columns]
+        has_script_cols = ("title" in cols and "caption_text_1" in cols and "narration_text_1" in cols)
+        
+        print(f"Loaded {len(df)} rows from file. Starting batch generation...")
+        for idx, row in df.iterrows():
+            row_dict = row.to_dict()
+            if has_script_cols:
+                queries_val = row_dict.get("queries", "")
+                if pd.isna(queries_val):
+                    queries_val = ""
+                queries_list = [q.strip() for q in str(queries_val).split(",") if q.strip()]
+                while len(queries_list) < 8:
+                    queries_list.append("history")
+                queries_list = queries_list[:8]
+                
+                script_data = {
+                    "title": str(row_dict.get("title", "")).strip(),
+                    "year": str(row_dict.get("year", "Unknown")).strip(),
+                    "bg_music_vibe": str(row_dict.get("bg_music_vibe", "mystery")).strip(),
+                    "caption_text_1": str(row_dict.get("caption_text_1", "")).strip(),
+                    "caption_text_2": str(row_dict.get("caption_text_2", "")).strip(),
+                    "caption_text_3": str(row_dict.get("caption_text_3", "")).strip(),
+                    "caption_text_4": str(row_dict.get("caption_text_4", "")).strip(),
+                    "narration_text_1": str(row_dict.get("narration_text_1", "")).strip(),
+                    "narration_text_2": str(row_dict.get("narration_text_2", "")).strip(),
+                    "narration_text_3": str(row_dict.get("narration_text_3", "")).strip(),
+                    "narration_text_4": str(row_dict.get("narration_text_4", "")).strip(),
+                    "queries": queries_list,
+                    "seo_title": str(row_dict.get("seo_title", f"{row_dict.get('title', '')} — Secrets of the Past 🏺✨")).strip(),
+                    "seo_description": str(row_dict.get("seo_description", "")).strip(),
+                    "seo_hashtags": str(row_dict.get("seo_hashtags", "#History #Urdu")).strip(),
+                    "seo_short_caption": str(row_dict.get("seo_short_caption", "")).strip()
+                }
+                print(f"\nProcessing manual script row {idx+1}/{len(df)}: '{script_data['title']}'")
+                generate_video_for_topic(None, provider=provider, manual_script_data=script_data)
+            else:
+                topic_col = None
+                for c in df.columns:
+                    if c.lower() in ["topic", "topic_title", "title", "name"]:
+                        topic_col = c
+                        break
+                if not topic_col:
+                    topic_col = df.columns[0]
+                topic_val = str(row_dict[topic_col]).strip()
+                print(f"\nProcessing topic row {idx+1}/{len(df)}: '{topic_val}'")
+                generate_video_for_topic(topic_val, provider=provider)
+    elif args.news_url:
+        from history_reels.news_scraper import scrape_article_text, fetch_rss_feed
+        # If XML/RSS, pick first link
+        url_lower = args.news_url.lower()
+        if "xml" in url_lower or "rss" in url_lower or "feed" in url_lower:
+            print(f"Fetching RSS feed: {args.news_url}")
+            feeds = fetch_rss_feed(args.news_url)
+            if feeds:
+                target_url = feeds[0]["link"]
+                print(f"Selected latest article: '{feeds[0]['title']}' -> {target_url}")
+                article_text = scrape_article_text(target_url) or feeds[0]["description"]
+            else:
+                raise ValueError("Could not fetch or parse RSS feed.")
+        else:
+            print(f"Scraping article web page: {args.news_url}")
+            article_text = scrape_article_text(args.news_url)
+            
+        if not article_text or not article_text.strip():
+            raise ValueError("Scraped article text is empty.")
+            
+        generate_video_for_topic(article_text, provider=provider, is_raw_script=True)
+    elif args.topic:
         # Command-line single topic
         generate_video_for_topic(args.topic, provider=provider)
     elif args.batch:

@@ -40,10 +40,8 @@ class ScriptConfig(BaseModel):
                 raise ValueError("Queries cannot contain empty strings.")
         return v
 
-def fetch_ai_script(topic, provider="gemini"):
-    system_prompt = (
-        "You are an expert history documentary scriptwriter. Generate script configuration for Urdu short reels in JSON format. "
-        "The output must strictly follow this JSON schema:\n"
+def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
+    schema_details = (
         "{\n"
         "  \"title\": \"Short English Title (e.g., Giza Pyramids)\",\n"
         "  \"year\": \"Historical Era/Year (e.g., 2560 BCE)\",\n"
@@ -57,7 +55,7 @@ def fetch_ai_script(topic, provider="gemini"):
         "  \"narration_text_3\": \"Urdu narration text corresponding exactly to Slide 3 (approx 7-9 seconds long)\",\n"
         "  \"narration_text_4\": \"Urdu narration text corresponding exactly to Slide 4 (approx 7-9 seconds long)\",\n"
         "  \"queries\": [\n"
-        "    \"8 specific search queries (only list exactly 8 queries) for Pexels stock video matching the script flow, e.g. ['giza plateau', 'desert pyramids', 'ancient stone blocks', 'workers building', 'pharaoh statue', 'camel walking', 'ancient map', 'sunset pyramids']\"\n"
+        "    \"8 specific search queries (only list exactly 8 queries) for stock video/images matching the script flow, e.g. ['giza plateau', 'desert pyramids', 'ancient stone blocks', 'workers building', 'pharaoh statue', 'camel walking', 'ancient map', 'sunset pyramids']\"\n"
         "  ],\n"
         "  \"seo_title\": \"Hook/Title for social media (e.g., Pyramids of Giza — Secrets of the Pharaohs 🏺✨)\",\n"
         "  \"seo_description\": \"Detailed social media caption containing Roman Urdu narrative summary and Urdu script summary\",\n"
@@ -66,14 +64,28 @@ def fetch_ai_script(topic, provider="gemini"):
         "}"
     )
 
+    if is_raw_script:
+        system_prompt = (
+            "You are an expert short-form video producer. Your task is to take the provided raw narrative script (which can be in Urdu, English, or Roman Urdu) "
+            "and format/split it into exactly 4 logical slides matching the required JSON format. Ensure caption_texts are in Nastaliq-friendly Urdu. "
+            f"The output must strictly follow this JSON schema:\n{schema_details}"
+        )
+        user_prompt = f"Structure this raw script text into the JSON format:\n{topic}"
+    else:
+        system_prompt = (
+            "You are an expert history documentary scriptwriter. Generate script configuration for Urdu short reels in JSON format. "
+            f"The output must strictly follow this JSON schema:\n{schema_details}"
+        )
+        user_prompt = f"Generate script configuration in valid JSON format for topic: {topic}"
+
     if provider == "gemini":
-        print(f"Calling Google Gemini 1.5 Flash to auto-generate script for topic: '{topic}'...")
+        print(f"Calling Google Gemini 2.0 Flash to auto-generate script...")
         if not config.GEMINI_API_KEY:
             raise ValueError("Error: GEMINI_API_KEY environment variable is not set. Please set it in your .env file.")
         
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={config.GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={config.GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
-        prompt_text = f"{system_prompt}\n\nGenerate script configuration in valid JSON format for topic: {topic}"
+        prompt_text = f"{system_prompt}\n\n{user_prompt}"
         payload = {
             "contents": [
                 {
@@ -99,8 +111,8 @@ def fetch_ai_script(topic, provider="gemini"):
         except Exception as e:
             raise ValueError(f"Failed to parse or validate Gemini API response: {e}. Raw response: {result}")
             
-    else:
-        print(f"Calling OpenAI GPT-4o-mini to auto-generate script for topic: '{topic}'...")
+    elif provider == "openai":
+        print(f"Calling OpenAI GPT-4o-mini to auto-generate script...")
         if not config.OPENAI_API_KEY:
             raise ValueError("Error: OPENAI_API_KEY environment variable is not set. Please set it in your .env file.")
         url = "https://api.openai.com/v1/chat/completions"
@@ -114,7 +126,7 @@ def fetch_ai_script(topic, provider="gemini"):
             "response_format": { "type": "json_object" },
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Topic: {topic}"}
+                {"role": "user", "content": user_prompt}
             ]
         }
         
@@ -125,3 +137,82 @@ def fetch_ai_script(topic, provider="gemini"):
         parsed = json.loads(content)
         validated = ScriptConfig(**parsed)
         return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
+
+    elif provider == "groq":
+        print(f"Calling Groq llama-3.3-70b-versatile to auto-generate script...")
+        if not config.GROQ_API_KEY:
+            raise ValueError("Error: GROQ_API_KEY environment variable is not set. Please set it in your .env file.")
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {config.GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "response_format": { "type": "json_object" },
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        }
+        
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+        content = result["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+        validated = ScriptConfig(**parsed)
+        return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
+
+    elif provider == "ollama":
+        print("Calling Local Ollama qwen2.5:3b to auto-generate script...")
+        url = "http://localhost:11434/api/chat"
+        payload = {
+            "model": "qwen2.5:3b",
+            "format": "json",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "stream": False
+        }
+        response = requests.post(url, json=payload, timeout=300)
+        response.raise_for_status()
+        result = response.json()
+        content = result["message"]["content"]
+        parsed = json.loads(content)
+        validated = ScriptConfig(**parsed)
+        return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
+
+    elif provider == "openrouter":
+        print(f"Calling OpenRouter Llama 3.3 70B to auto-generate script...")
+        if not config.OPENROUTER_API_KEY:
+            raise ValueError("Error: OPENROUTER_API_KEY environment variable is not set. Please set it in your .env file.")
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
+            "HTTP-Referer": "https://github.com/anisar699/History-Reels-Builder-Gemini",
+            "X-Title": "History Reels Builder",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "meta-llama/llama-3.3-70b-instruct",
+            "response_format": { "type": "json_object" },
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        }
+        
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+        content = result["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+        validated = ScriptConfig(**parsed)
+        return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
+
+    else:
+        raise ValueError(f"Unknown AI content provider: {provider}")

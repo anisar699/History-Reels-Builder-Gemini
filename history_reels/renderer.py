@@ -21,33 +21,52 @@ def build_video_frames(voice_dur):
     
     clips = []
     for i in range(1, config.NUM_CLIPS + 1):
-        raw_path = os.path.join(config.TOPIC_TEMP_DIR, f"raw_clip{i}.mp4")
+        raw_path_mp4 = os.path.join(config.TOPIC_TEMP_DIR, f"raw_clip{i}.mp4")
+        raw_path_jpg = os.path.join(config.TOPIC_TEMP_DIR, f"raw_clip{i}.jpg")
+        raw_path_png = os.path.join(config.TOPIC_TEMP_DIR, f"raw_clip{i}.png")
+        
         clip_path = os.path.join(config.TOPIC_TEMP_DIR, f"clip{i}.mp4")
         clips.append(clip_path)
         
-        w, h = get_video_dimensions(raw_path)
-        if (w / h) > (9 / 16):
-            crop_h = h
-            crop_w = int(h * 9 / 16)
-            if crop_w % 2 != 0:
-                crop_w += 1
-            offset_x = (w - crop_w) // 2
-            offset_y = 0
-        else:
-            crop_w = w
-            crop_h = int(w * 16 / 9)
-            if crop_h % 2 != 0:
-                crop_h += 1
-            offset_x = 0
-            offset_y = (h - crop_h) // 2
+        if os.path.exists(raw_path_mp4):
+            # Process Video Clip
+            w, h = get_video_dimensions(raw_path_mp4)
+            if (w / h) > (9 / 16):
+                crop_h = h
+                crop_w = int(h * 9 / 16)
+                if crop_w % 2 != 0:
+                    crop_w += 1
+                offset_x = (w - crop_w) // 2
+                offset_y = 0
+            else:
+                crop_w = w
+                crop_h = int(w * 16 / 9)
+                if crop_h % 2 != 0:
+                    crop_h += 1
+                offset_x = 0
+                offset_y = (h - crop_h) // 2
+                
+            vf = f"crop={crop_w}:{crop_h}:{offset_x}:{offset_y},scale=720:1280"
+            cmd = [
+                "ffmpeg", "-y", "-ss", "0.0", "-i", raw_path_mp4, "-t", f"{clip_dur:.3f}",
+                "-vf", vf, "-an", "-r", str(config.FPS), clip_path
+            ]
+            subprocess.run(cmd, check=True)
             
-        vf = f"crop={crop_w}:{crop_h}:{offset_x}:{offset_y},scale=720:1280"
-        
-        cmd = [
-            "ffmpeg", "-y", "-ss", "0.0", "-i", raw_path, "-t", f"{clip_dur:.3f}",
-            "-vf", vf, "-an", "-r", str(config.FPS), clip_path
-        ]
-        subprocess.run(cmd, check=True)
+        else:
+            # Process Image Clip (Convert to video using Ken Burns zoom effect)
+            img_path = raw_path_jpg if os.path.exists(raw_path_jpg) else raw_path_png
+            if not os.path.exists(img_path):
+                raise FileNotFoundError(f"Error: No video or image clip found for index {i}")
+                
+            # Scale up to 1440:2560 before zoompan to ensure crisp resolution during slow zoom
+            dur_frames = int(clip_dur * config.FPS)
+            vf_zoom = f"scale=1440:2560,zoompan=z='zoom+0.0005':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={dur_frames}:s=720x1280"
+            cmd = [
+                "ffmpeg", "-y", "-loop", "1", "-i", img_path, "-t", f"{clip_dur:.3f}",
+                "-vf", vf_zoom, "-an", "-r", str(config.FPS), clip_path
+            ]
+            subprocess.run(cmd, check=True)
         
     print("Crossfading clips...")
     silent_temp = os.path.join(config.TOPIC_TEMP_DIR, "silent_temp.mp4")
