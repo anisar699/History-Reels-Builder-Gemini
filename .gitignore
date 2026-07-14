@@ -1,0 +1,16 @@
+# System / IDE
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+
+# Sensitive API config
+.env
+
+# Local data & temp files
+history_reels_tmp/
+voices_audition/
+*.mp4
+*.wav
+*.mp3
+*.txt
