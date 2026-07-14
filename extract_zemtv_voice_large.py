@@ -8,8 +8,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 API_KEY = os.environ.get("FISH_AUDIO_API_KEY")
-TEMP_DIR = r"C:\Users\lenovo\Downloads\history_reels_tmp"
-VOICE_ID_FILE = r"C:\Users\lenovo\Pictures\history videos\fish_voice_id.txt"
+HOME = os.path.expanduser("~")
+TEMP_DIR = os.path.join(HOME, "Downloads", "history_reels_tmp")
+VOICE_ID_FILE = os.path.join(HOME, "Pictures", "history videos", "fish_voice_id.txt")
 
 # Videos to extract samples from
 VIDEOS = [

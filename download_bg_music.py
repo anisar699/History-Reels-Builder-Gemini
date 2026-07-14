@@ -1,7 +1,8 @@
 import os
 import subprocess
 
-MUSIC_DIR = r"C:\Users\lenovo\Pictures\history videos\bg_music"
+HOME = os.path.expanduser("~")
+MUSIC_DIR = os.path.join(HOME, "Pictures", "history videos", "bg_music")
 
 CATEGORIES = {
     "mystery": "cinematic mystery background music no copyright",
