@@ -271,6 +271,25 @@ def ensure_assets():
             except Exception as e:
                 print(f"Failed to download music track: {e}")
 
+def check_system_dependencies():
+    missing = []
+    
+    # Check FFmpeg
+    if not shutil.which("ffmpeg"):
+        missing.append("FFmpeg (Required for video compilation). Install via 'winget install Gyan.FFmpeg' or download from website and add to PATH.")
+        
+    # Check edge-tts
+    if not shutil.which("edge-tts"):
+        missing.append("edge-tts (Required for Urdu voiceover). Install via 'pip install edge-tts'.")
+        
+    if missing:
+        print("\n=== SYSTEM DEPENDENCY CHECK FAILED ===")
+        for m in missing:
+            print(f"- {m}")
+        print("======================================\n")
+        return False
+    return True
+
 def check_inputs():
     os.makedirs(TOPIC_TEMP_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -689,7 +708,9 @@ if __name__ == "__main__":
     except Exception:
         pass
         
-    # Get topic from arguments or prompt
+    # Check if necessary system CLI tools are installed
+    if not check_system_dependencies():
+        sys.exit(1)
     parser = argparse.ArgumentParser(description="AI Short Reel Generator")
     parser.add_argument("--topic", type=str, help="Single topic for the video")
     parser.add_argument("--batch", type=str, help="Path to batch topics txt file")
