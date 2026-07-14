@@ -131,6 +131,22 @@ with st.sidebar:
     }
     config.MEDIA_PREFERENCE = pref_mapping[media_selection]
     
+    voice_provider = st.selectbox(
+        "Voice Narrator Provider",
+        options=["Edge-TTS (Free)", "ElevenLabs (Realistic)"],
+        index=0,
+        help="Select the TTS voice synthesizer engine."
+    )
+    
+    if voice_provider == "ElevenLabs (Realistic)":
+        config.VOICE_PROVIDER = "elevenlabs"
+        config.ELEVENLABS_VOICE_ID = st.text_input(
+            "ElevenLabs Voice ID", 
+            value=getattr(config, "ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM") or "21m00Tcm4TlvDq8ikWAM"
+        )
+    else:
+        config.VOICE_PROVIDER = "edge-tts"
+        
     st.markdown("---")
     st.markdown("<div class='widget-title'>🔑 API KEYS CONFIGURATION</div>", unsafe_allow_html=True)
     
@@ -138,8 +154,11 @@ with st.sidebar:
     new_openai = st.text_input("OpenAI API Key", value=config.OPENAI_API_KEY or "", type="password")
     new_groq = st.text_input("Groq API Key", value=config.GROQ_API_KEY or "", type="password")
     new_openrouter = st.text_input("OpenRouter API Key", value=getattr(config, "OPENROUTER_API_KEY", "") or "", type="password")
+    new_elevenlabs = st.text_input("ElevenLabs API Key", value=getattr(config, "ELEVENLABS_API_KEY", "") or "", type="password")
     new_pexels = st.text_input("Pexels API Key", value=config.PEXELS_API_KEY or "", type="password")
     new_pixabay = st.text_input("Pixabay API Key", value=config.PIXABAY_API_KEY or "", type="password")
+    new_story_pub = st.text_input("Storyblocks Public Key", value=getattr(config, "STORYBLOCKS_PUBLIC_KEY", "") or "", type="password")
+    new_story_priv = st.text_input("Storyblocks Private Key", value=getattr(config, "STORYBLOCKS_PRIVATE_KEY", "") or "", type="password")
     
     if st.button("Save & Reload Keys 💾", use_container_width=True):
         # Update local .env file in the workspace root
@@ -150,6 +169,11 @@ OPENAI_API_KEY={new_openai.strip()}
 GEMINI_API_KEY={new_gemini.strip()}
 GROQ_API_KEY={new_groq.strip()}
 OPENROUTER_API_KEY={new_openrouter.strip()}
+ELEVENLABS_API_KEY={new_elevenlabs.strip()}
+ELEVENLABS_VOICE_ID={getattr(config, "ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM").strip()}
+VOICE_PROVIDER={getattr(config, "VOICE_PROVIDER", "edge-tts").strip()}
+STORYBLOCKS_PUBLIC_KEY={new_story_pub.strip()}
+STORYBLOCKS_PRIVATE_KEY={new_story_priv.strip()}
 """
         with open(env_path, "w", encoding="utf-8") as f:
             f.write(env_content)
@@ -159,16 +183,22 @@ OPENROUTER_API_KEY={new_openrouter.strip()}
         config.OPENAI_API_KEY = new_openai.strip()
         config.GROQ_API_KEY = new_groq.strip()
         config.OPENROUTER_API_KEY = new_openrouter.strip()
+        config.ELEVENLABS_API_KEY = new_elevenlabs.strip()
         config.PEXELS_API_KEY = new_pexels.strip()
         config.PIXABAY_API_KEY = new_pixabay.strip()
+        config.STORYBLOCKS_PUBLIC_KEY = new_story_pub.strip()
+        config.STORYBLOCKS_PRIVATE_KEY = new_story_priv.strip()
         
         # Update os.environ
         os.environ["GEMINI_API_KEY"] = new_gemini.strip()
         os.environ["OPENAI_API_KEY"] = new_openai.strip()
         os.environ["GROQ_API_KEY"] = new_groq.strip()
         os.environ["OPENROUTER_API_KEY"] = new_openrouter.strip()
+        os.environ["ELEVENLABS_API_KEY"] = new_elevenlabs.strip()
         os.environ["PEXELS_API_KEY"] = new_pexels.strip()
         os.environ["PIXABAY_API_KEY"] = new_pixabay.strip()
+        os.environ["STORYBLOCKS_PUBLIC_KEY"] = new_story_pub.strip()
+        os.environ["STORYBLOCKS_PRIVATE_KEY"] = new_story_priv.strip()
         
         st.toast("API Keys saved to .env & reloaded!", icon="💾")
         st.rerun()
@@ -566,8 +596,20 @@ with tabs[2]:
             3. **\"Create new secret key\"** click karein aur key copy kar ke dashboard main paste karein.
             """)
 
-        # 5. Pexels Stock Media API Key
-        with st.expander("📹 5. Pexels API Key (Free High-Quality Footage)", expanded=False):
+        # 5. ElevenLabs API Key
+        with st.expander("🗣️ 5. ElevenLabs API Key (Premium Realistic Voices)", expanded=False):
+            st.markdown("""
+            **Working (Kaam):** Premium ultra-realistic AI voice synthesis generate karne ke liye use hota hai (supports Urdu and English).
+            
+            **How to Get (Banane ka tareeqa):**
+            1. Visit [ElevenLabs.io](https://elevenlabs.io/).
+            2. Sign up or log into your account.
+            3. Go to **Profile Settings** (bottom left avatar menu) and select **"Profile + API Keys"**.
+            4. Copy your **API Key** and paste it in the dashboard.
+            """)
+
+        # 6. Pexels Stock Media API Key
+        with st.expander("📹 6. Pexels API Key (Free High-Quality Footage)", expanded=False):
             st.markdown("""
             **Working (Kaam):** Script ke flow ke mutabiq free 9:16 vertical stock videos aur images search and download karne ke liye use hota hai.
             
@@ -577,8 +619,8 @@ with tabs[2]:
             3. **\"Your API Key\"** section main request submission (simple form entry) karte hi instant aur free API key show ho jayegi, use copy kar ke dashboard sidebar main paste kar dein.
             """)
 
-        # 6. Pixabay Stock Media API Key
-        with st.expander("🖼️ 6. Pixabay API Key (Backup Stock Media)", expanded=False):
+        # 7. Pixabay Stock Media API Key
+        with st.expander("🖼️ 7. Pixabay API Key (Backup Stock Media)", expanded=False):
             st.markdown("""
             **Working (Kaam):** Pexels ke limits lagne par backup images aur videos download karne ke liye use hota hai.
             
@@ -589,8 +631,19 @@ with tabs[2]:
             4. Wo key copy kar ke sidebar main paste kar dein.
             """)
 
-        # 7. Local Offline Ollama (Offline Mode)
-        with st.expander("💻 7. Local Offline Ollama Setup (Offline & Free)", expanded=False):
+        # 8. Storyblocks Stock Media API Key
+        with st.expander("📼 8. Storyblocks API Keys (Premium Footage)", expanded=False):
+            st.markdown("""
+            **Working (Kaam):** Premium stock videos and footage download karne ke liye direct search integration.
+            
+            **How to Get (Banane ka tareeqa):**
+            1. Visit [Storyblocks Member Portal](https://www.storyblocks.com/).
+            2. Login and navigate to the developer/API integration portal.
+            3. Generate your **Public API Key** and **Private API Key** and enter them in the dashboard sidebar.
+            """)
+
+        # 9. Local Offline Ollama (Offline Mode)
+        with st.expander("💻 9. Local Offline Ollama Setup (Offline & Free)", expanded=False):
             st.markdown("""
             **Working (Kaam):** Bina internet aur bina kisi API key ke completely offline script build aur translate karne ke liye local computer engine.
             

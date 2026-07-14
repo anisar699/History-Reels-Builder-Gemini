@@ -11,8 +11,9 @@ def get_audio_duration(path):
     return float(res.stdout.strip())
 
 def generate_voiceover():
-    """Generates segmented voiceovers using edge-tts and concatenates them."""
-    print(f"Generating voiceover segments using edge-tts with voice {config.VOICE_ID}...")
+    """Generates segmented voiceovers using edge-tts or ElevenLabs and concatenates them."""
+    provider = getattr(config, "VOICE_PROVIDER", "edge-tts").lower()
+    print(f"Generating voiceover segments using {provider}...")
     os.makedirs(config.TOPIC_TEMP_DIR, exist_ok=True)
     
     narrations = [
@@ -26,11 +27,35 @@ def generate_voiceover():
     
     for idx, text in enumerate(narrations, 1):
         seg_path = os.path.join(config.TOPIC_TEMP_DIR, f"voice_{idx}.mp3")
-        cmd_tts = [
-            "edge-tts", "--text", text, "--voice", config.VOICE_ID,
-            "--write-media", seg_path
-        ]
-        subprocess.run(cmd_tts, check=True)
+        if provider == "elevenlabs":
+            if not getattr(config, "ELEVENLABS_API_KEY", None):
+                raise ValueError("Error: ELEVENLABS_API_KEY environment variable is not set. Please set it in your .env file.")
+            
+            voice_id = getattr(config, "ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM") or "21m00Tcm4TlvDq8ikWAM"
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+            headers = {
+                "xi-api-key": config.ELEVENLABS_API_KEY,
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "text": text,
+                "model_id": "eleven_multilingual_v2",
+                "voice_settings": {
+                    "stability": 0.5,
+                    "similarity_boost": 0.75
+                }
+            }
+            import requests
+            response = requests.post(url, headers=headers, json=payload, timeout=45)
+            response.raise_for_status()
+            with open(seg_path, "wb") as f:
+                f.write(response.content)
+        else:
+            cmd_tts = [
+                "edge-tts", "--text", text, "--voice", config.VOICE_ID,
+                "--write-media", seg_path
+            ]
+            subprocess.run(cmd_tts, check=True)
         voice_segments.append(seg_path)
         
         dur = get_audio_duration(seg_path)

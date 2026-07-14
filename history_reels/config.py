@@ -12,6 +12,11 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+VOICE_PROVIDER = os.environ.get("VOICE_PROVIDER", "edge-tts")
+STORYBLOCKS_PUBLIC_KEY = os.environ.get("STORYBLOCKS_PUBLIC_KEY")
+STORYBLOCKS_PRIVATE_KEY = os.environ.get("STORYBLOCKS_PRIVATE_KEY")
 
 # Directories
 HOME = os.path.expanduser("~")

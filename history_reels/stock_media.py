@@ -70,6 +70,36 @@ def download_clip_for_query(query, index):
 
     # 1. Video searches (if MEDIA_PREFERENCE is mixed or videos)
     if config.MEDIA_PREFERENCE in ["mixed", "videos"]:
+        # Storyblocks Search
+        if getattr(config, "STORYBLOCKS_PUBLIC_KEY", None) and getattr(config, "STORYBLOCKS_PRIVATE_KEY", None):
+            print(f"Searching Storyblocks for '{query}'...")
+            try:
+                import hmac
+                import hashlib
+                expires = int(time.time()) + 100
+                hmac_input = f"/api/v2/videos/search?keywords={requests.utils.quote(query)}"
+                sig = hmac.new(
+                    config.STORYBLOCKS_PRIVATE_KEY.encode('utf-8'),
+                    hmac_input.encode('utf-8'),
+                    hashlib.sha256
+                ).hexdigest()
+                url = f"https://api.storyblocks.com/api/v2/videos/search?keywords={requests.utils.quote(query)}&APIKEY={config.STORYBLOCKS_PUBLIC_KEY}&EXPIRES={expires}&HMAC={sig}"
+                r = requests.get(url, timeout=15)
+                if r.status_code == 200:
+                    data = r.json()
+                    results = data.get("results", [])
+                    if results:
+                        item = results[0]
+                        preview_url = item.get("preview_url")
+                        if preview_url:
+                            print(f"Selected Storyblocks video preview: {item.get('title')}")
+                            if download_file_with_retry(preview_url, save_path):
+                                credit = f"Storyblocks Video: {item.get('title')} (ID: {item.get('id')})"
+                                config.VIDEO_ATTRIBUTIONS.append(credit)
+                                return True
+            except Exception as e:
+                print(f"Storyblocks query failed: {e}")
+
         # Pexels Search
         print(f"Searching Pexels for '{query}'...")
         url = f"https://api.pexels.com/videos/search?query={requests.utils.quote(query)}&per_page=15"
