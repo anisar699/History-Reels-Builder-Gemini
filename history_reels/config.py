@@ -5,18 +5,26 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+def _sanitize_key(val):
+    if not val:
+        return ""
+    val_strip = val.strip()
+    if "api_key_here" in val_strip or "your_" in val_strip:
+        return ""
+    return val_strip
+
 # API Keys
-PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
-PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
+PEXELS_API_KEY = _sanitize_key(os.environ.get("PEXELS_API_KEY"))
+PIXABAY_API_KEY = _sanitize_key(os.environ.get("PIXABAY_API_KEY"))
+OPENAI_API_KEY = _sanitize_key(os.environ.get("OPENAI_API_KEY"))
+GEMINI_API_KEY = _sanitize_key(os.environ.get("GEMINI_API_KEY"))
+GROQ_API_KEY = _sanitize_key(os.environ.get("GROQ_API_KEY"))
+OPENROUTER_API_KEY = _sanitize_key(os.environ.get("OPENROUTER_API_KEY"))
+ELEVENLABS_API_KEY = _sanitize_key(os.environ.get("ELEVENLABS_API_KEY"))
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 VOICE_PROVIDER = os.environ.get("VOICE_PROVIDER", "edge-tts")
-STORYBLOCKS_PUBLIC_KEY = os.environ.get("STORYBLOCKS_PUBLIC_KEY")
-STORYBLOCKS_PRIVATE_KEY = os.environ.get("STORYBLOCKS_PRIVATE_KEY")
+STORYBLOCKS_PUBLIC_KEY = _sanitize_key(os.environ.get("STORYBLOCKS_PUBLIC_KEY"))
+STORYBLOCKS_PRIVATE_KEY = _sanitize_key(os.environ.get("STORYBLOCKS_PRIVATE_KEY"))
 
 # Directories
 HOME = os.path.expanduser("~")
@@ -92,8 +100,35 @@ DOWNLOADED_VIDEO_IDS = set()
 VIDEO_ATTRIBUTIONS = []
 MEDIA_PREFERENCE = "mixed"
 TARGET_DURATION = None
+CLIP_DURATION_TARGET = 5.0
 VIDEO_WIDTH = 720
 VIDEO_HEIGHT = 1280
+
+SHOW_PROGRESS_BAR = True
+PROGRESS_BAR_COLOR = "gold"
+PROGRESS_BAR_HEIGHT = 8
+SHOW_WATERMARK = False
+WATERMARK_SIZE = 100
+WATERMARK_OPACITY = 0.5
+WATERMARK_POSITION = "main_w-overlay_w-20:20"
+VIDEO_TRANSITION = "fade"
+OLLAMA_MODEL = "qwen2.5:3b"
+AUDIO_DUCKING = True
+VOICE_MASTERING = True
+LAST_ERROR_MESSAGE = ""
+CINEMATIC_GRAIN = False
+CAMERA_SHAKE = False
+TRANSITION_SFX = False
+WATERMARK_TEXT = ""
+TRANSITION_OFFSETS = []
+VOICE_PITCH = "default"
+AMBIENT_SOUND = None
+COLOR_FILTER = None
+ALLOWED_SOURCES = ["pexels", "pixabay", "google", "pinterest", "wikimedia_image"]
+INTRO_BUMPER = None
+OUTRO_BUMPER = None
+UNSPLASH_API_KEY = _sanitize_key(os.environ.get("UNSPLASH_API_KEY"))
+VOICE_PROVIDER = "edge-tts"
 
 def check_system_dependencies():
     """Verify that FFmpeg and edge-tts are available in PATH."""
@@ -118,3 +153,8 @@ def check_system_dependencies():
         print("="*80 + "\n")
         return False
     return True
+
+def reset_per_run_state():
+    global SLIDE_TIMINGS, DOWNLOADED_VIDEO_IDS
+    SLIDE_TIMINGS = []
+    DOWNLOADED_VIDEO_IDS = set()

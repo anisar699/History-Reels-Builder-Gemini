@@ -1,61 +1,83 @@
 import json
+import re
 import requests
 from typing import List
 from pydantic import BaseModel, Field, field_validator
 from history_reels import config
 
+def parse_json_response(content):
+    if not content:
+        raise ValueError("Model returned an empty response.")
+    content_str = content.strip()
+    try:
+        return json.loads(content_str)
+    except Exception as primary_err:
+        cleaned = content_str
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r'\s*```$', '', cleaned)
+        try:
+            return json.loads(cleaned)
+        except Exception:
+            pass
+            
+        start = content_str.find('{')
+        end = content_str.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            try:
+                content_str = content_str[start:end+1]
+                return json.loads(content_str)
+            except Exception:
+                pass
+                
+        raise ValueError(f"Failed to decode JSON from model response. Error: {primary_err}. Raw output: {content_str[:300]}")
+
 class ScriptConfig(BaseModel):
-    title: str = Field(..., min_length=1)
-    year: str = Field(..., min_length=1)
-    bg_music_vibe: str = Field(..., min_length=1)
-    caption_text_1: str = Field(..., min_length=1)
-    caption_text_2: str = Field(..., min_length=1)
-    caption_text_3: str = Field(..., min_length=1)
-    caption_text_4: str = Field(..., min_length=1)
-    narration_text_1: str = Field(..., min_length=1)
-    narration_text_2: str = Field(..., min_length=1)
-    narration_text_3: str = Field(..., min_length=1)
-    narration_text_4: str = Field(..., min_length=1)
-    queries: List[str] = Field(...)
-    seo_title: str = Field(..., min_length=1)
-    seo_description: str = Field(..., min_length=1)
-    seo_hashtags: str = Field(..., min_length=1)
-    seo_short_caption: str = Field(..., min_length=1)
+    title: str = Field(default="")
+    year: str = Field(default="")
+    bg_music_vibe: str = Field(default="mystery")
+    captions: List[str] = Field(default_factory=list)
+    narrations: List[str] = Field(default_factory=list)
+    queries: List[str] = Field(default_factory=list)
+    seo_title: str = Field(default="")
+    seo_description: str = Field(default="")
+    seo_hashtags: str = Field(default="")
+    seo_short_caption: str = Field(default="")
 
     @field_validator("bg_music_vibe")
     @classmethod
     def validate_vibe(cls, v):
-        allowed = ["mystery", "epic", "sad", "ancient"]
-        if v.lower() not in allowed:
-            raise ValueError(f"bg_music_vibe must be one of {allowed}")
-        return v.lower()
+        val = str(v).lower().strip()
+        allowed = ["mystery", "epic", "sad", "ancient", "modern", "intense"]
+        if val not in allowed:
+            return "mystery"
+        return val
 
     @field_validator("queries")
     @classmethod
     def validate_queries(cls, v):
-        if len(v) != 8:
-            raise ValueError("Exactly 8 queries must be provided.")
+        if not isinstance(v, list):
+            v = []
+        cleaned = []
         for q in v:
-            if not q or not q.strip():
-                raise ValueError("Queries cannot contain empty strings.")
-        return v
+            val = str(q).strip()
+            if val:
+                cleaned.append(val)
+        while len(cleaned) < 8:
+            cleaned.append("cinematic")
+        return cleaned
 
 def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
+    provider = str(provider).strip().lower()
     schema_details = (
         "{\n"
-        "  \"title\": \"Short English Title (e.g., Giza Pyramids)\",\n"
-        "  \"year\": \"Historical Era/Year (e.g., 2560 BCE)\",\n"
-        "  \"bg_music_vibe\": \"One of: mystery, epic, sad, ancient\",\n"
-        "  \"caption_text_1\": \"Urdu Nastaliq formatted text for Slide 1 (max 3 lines, use bold markdown **word** for key terms, use Zer diacritic like 'کِیا' for the word kiya)\",\n"
-        "  \"caption_text_2\": \"Urdu Nastaliq formatted text for Slide 2 (max 3 lines, use bold markdown **word** for key terms)\",\n"
-        "  \"caption_text_3\": \"Urdu Nastaliq formatted text for Slide 3 (max 3 lines, use bold markdown **word** for key terms)\",\n"
-        "  \"caption_text_4\": \"Urdu Nastaliq formatted text for Slide 4 (max 3 lines, use bold markdown **word** for key terms)\",\n"
-        "  \"narration_text_1\": \"Urdu narration text corresponding exactly to Slide 1 (approx 7-9 seconds long, use Zer diacritic like 'کِیا' for the word kiya)\",\n"
-        "  \"narration_text_2\": \"Urdu narration text corresponding exactly to Slide 2 (approx 7-9 seconds long)\",\n"
-        "  \"narration_text_3\": \"Urdu narration text corresponding exactly to Slide 3 (approx 7-9 seconds long)\",\n"
-        "  \"narration_text_4\": \"Urdu narration text corresponding exactly to Slide 4 (approx 7-9 seconds long)\",\n"
+        "  \"title\": \"Short English Title (e.g., AI Revolution, Giza Pyramids)\",\n"
+        "  \"year\": \"Context or Era (e.g., 2024, Cyberpunk, 2560 BCE)\",\n"
+        "  \"bg_music_vibe\": \"One of: mystery, epic, sad, ancient, modern, intense\",\n"
+        "  \"captions\": [\"Urdu text for Slide 1...\", \"Urdu text for Slide 2...\", \"...generate as many as needed to reach target duration\"],\n"
+        "  \"narrations\": [\"Urdu narration for Slide 1...\", \"Urdu narration for Slide 2...\", \"...must match number of captions\"],\n"
         "  \"queries\": [\n"
-        "    \"8 specific search queries (only list exactly 8 queries) for stock video/images matching the script flow, e.g. ['giza plateau', 'desert pyramids', 'ancient stone blocks', 'workers building', 'pharaoh statue', 'camel walking', 'ancient map', 'sunset pyramids']\"\n"
+        "    \"specific search queries for stock video/images matching the script flow, e.g. ['giza plateau', 'neon city', 'hacker typing', 'space shuttle', 'pharaoh statue', 'cyber security', 'ancient map', 'cinematic landscape']\"\n"
         "  ],\n"
         "  \"seo_title\": \"Hook/Title for social media (e.g., Pyramids of Giza — Secrets of the Pharaohs 🏺✨)\",\n"
         "  \"seo_description\": \"Detailed social media caption containing Roman Urdu narrative summary and Urdu script summary\",\n"
@@ -65,38 +87,54 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
     )
 
     target_dur = getattr(config, "TARGET_DURATION", None)
-    dur_guidelines = ""
     if target_dur:
-        slide_dur = target_dur / 4.0
-        word_count = int(slide_dur * 2.3)
-        dur_guidelines = (
-            f" IMPORTANT: The user requested a video duration preset of exactly {target_dur} seconds. "
-            f"Therefore, you MUST generate slide narration texts that are long and detailed enough so that the total read-aloud "
-            f"duration of all slides combined matches this duration. Specifically, the Urdu narration for each of the 4 slides "
-            f"should contain approximately {word_count} words and take around {slide_dur:.1f} seconds to read out loud."
-        )
+        num_slides = int(target_dur / 5.0)
+        duration_instruction = f"IMPORTANT: The user requested a target video duration of {target_dur} seconds. You MUST generate approximately {num_slides} items in the captions, narrations, and queries arrays."
+    else:
+        duration_instruction = "IMPORTANT: Generate exactly as many captions, narrations, and queries as needed."
 
     if is_raw_script:
         system_prompt = (
-            "You are an expert short-form video producer. Your task is to take the provided raw narrative script (which can be in Urdu, English, or Roman Urdu) "
-            "and format/split it into exactly 4 logical slides matching the required JSON format. Ensure caption_texts are in Nastaliq-friendly Urdu. "
-            f"{dur_guidelines} The output must strictly follow this JSON schema:\n{schema_details}"
+            "You are an expert short-form viral video producer. Your task is to take the provided raw narrative script (which can be in Urdu, English, or Roman Urdu) "
+            "and format/split it into logical slides matching the required JSON format. Ensure captions are in Nastaliq-friendly Urdu. "
+            f"{duration_instruction} The output must strictly follow this JSON schema:\n{schema_details}"
         )
         user_prompt = f"Structure this raw script text into the JSON format:\n{topic}"
     else:
         system_prompt = (
-            "You are an expert history documentary scriptwriter. Generate script configuration for Urdu short reels in JSON format. "
-            f"{dur_guidelines} The output must strictly follow this JSON schema:\n{schema_details}"
+            "You are an expert short-form viral video producer and scriptwriter. Generate a highly engaging script configuration for Urdu short reels on ANY given topic (e.g. Tech, Facts, Horror, Motivation, History, etc.) in JSON format. "
+            f"{duration_instruction} The output must strictly follow this JSON schema:\n{schema_details}"
         )
         user_prompt = f"Generate script configuration in valid JSON format for topic: {topic}"
+
+    if provider == "auto":
+        print("\n[Auto Fallback Mode] Attempting to find the best available AI provider...")
+        chain = ["gemini", "groq", "openrouter", "openai", "ollama"]
+        last_error = None
+        for p in chain:
+            if p == "gemini" and not config.GEMINI_API_KEY: continue
+            if p == "groq" and not config.GROQ_API_KEY: continue
+            if p == "openrouter" and not config.OPENROUTER_API_KEY: continue
+            if p == "openai" and not config.OPENAI_API_KEY: continue
+            
+            try:
+                print(f"--> Trying {p.upper()}...")
+                return fetch_ai_script(topic, provider=p, is_raw_script=is_raw_script)
+            except Exception as e:
+                print(f"    [X] {p.upper()} failed: {e}")
+                last_error = e
+        raise RuntimeError(f"All Auto-Fallback providers failed. Last error: {last_error}")
 
     if provider == "gemini":
         print(f"Calling Google Gemini 2.0 Flash to auto-generate script...")
         if not config.GEMINI_API_KEY:
             raise ValueError("Error: GEMINI_API_KEY environment variable is not set. Please set it in your .env file.")
         
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={config.GEMINI_API_KEY}"
-        headers = {"Content-Type": "application/json"}
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+        headers = {
+            "x-goog-api-key": config.GEMINI_API_KEY,
+            "Content-Type": "application/json"
+        }
         prompt_text = f"{system_prompt}\n\n{user_prompt}"
         payload = {
             "contents": [
@@ -111,13 +149,16 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
             }
         }
         
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Network error: {e}")
         result = response.json()
         
         try:
             raw_text = result["candidates"][0]["content"]["parts"][0]["text"]
-            parsed = json.loads(raw_text)
+            parsed = parse_json_response(raw_text)
             validated = ScriptConfig(**parsed)
             return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
         except Exception as e:
@@ -142,11 +183,17 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
             ]
         }
         
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Network error: {e}")
         result = response.json()
-        content = result["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
+        try:
+            content = result["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise RuntimeError(f"Unexpected API response from {provider}: {e}")
+        parsed = parse_json_response(content)
         validated = ScriptConfig(**parsed)
         return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
 
@@ -169,19 +216,26 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
             ]
         }
         
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Network error: {e}")
         result = response.json()
-        content = result["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
+        try:
+            content = result["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise RuntimeError(f"Unexpected API response from {provider}: {e}")
+        parsed = parse_json_response(content)
         validated = ScriptConfig(**parsed)
         return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
 
     elif provider == "ollama":
-        print("Calling Local Ollama qwen2.5:3b to auto-generate script...")
+        ollama_model = getattr(config, "OLLAMA_MODEL", "qwen2.5:3b")
+        print(f"Calling Local Ollama ({ollama_model}) to auto-generate script...")
         url = "http://localhost:11434/api/chat"
         payload = {
-            "model": "qwen2.5:3b",
+            "model": ollama_model,
             "format": "json",
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -189,11 +243,17 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
             ],
             "stream": False
         }
-        response = requests.post(url, json=payload, timeout=300)
-        response.raise_for_status()
+        try:
+            response = requests.post(url, json=payload, timeout=300)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Network error: {e}")
         result = response.json()
-        content = result["message"]["content"]
-        parsed = json.loads(content)
+        try:
+            content = result["message"]["content"]
+        except (KeyError, TypeError) as e:
+            raise RuntimeError(f"Unexpected API response from Ollama: {e}. Raw: {result}")
+        parsed = parse_json_response(content)
         validated = ScriptConfig(**parsed)
         return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
 
@@ -218,11 +278,17 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
             ]
         }
         
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Network error: {e}")
         result = response.json()
-        content = result["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
+        try:
+            content = result["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise RuntimeError(f"Unexpected API response from {provider}: {e}")
+        parsed = parse_json_response(content)
         validated = ScriptConfig(**parsed)
         return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
 

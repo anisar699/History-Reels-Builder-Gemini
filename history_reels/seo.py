@@ -26,7 +26,7 @@ QUICK CAPTION (copy-paste short version)
 --------------------------------------------------------------------------------
 MEDIA + MUSIC NOTES
 --------------------------------------------------------------------------------
-Media: 8 dynamic video clips downloaded via Pexels/Pixabay API.
+Media: {config.NUM_CLIPS} dynamic video clips downloaded via Pexels/Pixabay API.
 Music: Custom Pool Music - Vibe: {config.BG_MUSIC_VIBE} (Track {config.BG_MUSIC_TRACK_INDEX}) - Royalty Free.
 
 CREDITS & ATTRIBUTIONS:
@@ -34,5 +34,6 @@ CREDITS & ATTRIBUTIONS:
 ================================================================================
 """
     seo_path = os.path.join(config.TOPIC_TEMP_DIR, "output.txt")
+    os.makedirs(config.TOPIC_TEMP_DIR, exist_ok=True)
     with open(seo_path, "w", encoding="utf-8") as f:
         f.write(seo_content)

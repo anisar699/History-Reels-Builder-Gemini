@@ -27,7 +27,9 @@ def markdown_to_ass(text):
 def write_ass_subtitles(ass_path):
     start_times = [0.0] + config.SLIDE_TIMINGS[:-1]
     end_times = config.SLIDE_TIMINGS
-    captions = [config.CAPTION_TEXT_1, config.CAPTION_TEXT_2, config.CAPTION_TEXT_3, config.CAPTION_TEXT_4]
+    captions = getattr(config, "CAPTIONS", [])
+    if not captions:
+        captions = [getattr(config, f"CAPTION_TEXT_{i}", "") for i in range(1, 5)]
     
     lines = []
     lines.append("[Script Info]")
@@ -48,7 +50,8 @@ def write_ass_subtitles(ass_path):
     lines.append("[Events]")
     lines.append("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
     
-    for i in range(4):
+    num_slides = min(len(start_times), len(end_times), len(captions))
+    for i in range(num_slides):
         start_str = format_ass_time(start_times[i])
         end_str = format_ass_time(end_times[i])
         ass_text = markdown_to_ass(captions[i])

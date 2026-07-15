@@ -7,8 +7,16 @@ def get_audio_duration(path):
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1", path
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    return float(res.stdout.strip())
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL)
+        duration = float(res.stdout.strip())
+        if duration <= 0:
+            raise ValueError(f"Invalid duration {duration} for {path}")
+        return duration
+    except FileNotFoundError:
+        raise RuntimeError("ffprobe not found. Please install FFmpeg (includes ffprobe).")
+    except (subprocess.CalledProcessError, ValueError) as e:
+        raise RuntimeError(f"Failed to get audio duration for '{path}': {e}")
 
 def generate_voiceover():
     """Generates segmented voiceovers using edge-tts or ElevenLabs and concatenates them."""
@@ -16,12 +24,10 @@ def generate_voiceover():
     print(f"Generating voiceover segments using {provider}...")
     os.makedirs(config.TOPIC_TEMP_DIR, exist_ok=True)
     
-    narrations = [
-        config.NARRATION_TEXT_1,
-        config.NARRATION_TEXT_2,
-        config.NARRATION_TEXT_3,
-        config.NARRATION_TEXT_4
-    ]
+    narrations = getattr(config, "NARRATIONS", [])
+    if not narrations:
+        narrations = [getattr(config, f"NARRATION_TEXT_{i}", "") for i in range(1, 5)]
+    narrations = [n for n in narrations if str(n).strip()]
     voice_segments = []
     durations = []
     
@@ -46,10 +52,16 @@ def generate_voiceover():
                 }
             }
             import requests
-            response = requests.post(url, headers=headers, json=payload, timeout=45)
-            response.raise_for_status()
-            with open(seg_path, "wb") as f:
-                f.write(response.content)
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=45)
+                response.raise_for_status()
+                with open(seg_path, "wb") as f:
+                    f.write(response.content)
+            except Exception:
+                if os.path.exists(seg_path):
+                    try: os.remove(seg_path)
+                    except: pass
+                raise
         else:
             temp_txt_path = os.path.join(config.TOPIC_TEMP_DIR, f"voice_text_{idx}.txt")
             with open(temp_txt_path, "w", encoding="utf-8") as f:
@@ -58,7 +70,20 @@ def generate_voiceover():
                 "edge-tts", "--file", temp_txt_path, "--voice", config.VOICE_ID,
                 "--write-media", seg_path
             ]
-            subprocess.run(cmd_tts, check=True)
+            voice_pitch = getattr(config, "VOICE_PITCH", "default")
+            if voice_pitch and voice_pitch != "default":
+                cmd_tts.extend(["--pitch", voice_pitch])
+            try:
+                subprocess.run(cmd_tts, check=True, stdin=subprocess.DEVNULL)
+            except Exception:
+                if os.path.exists(seg_path):
+                    try: os.remove(seg_path)
+                    except: pass
+                raise
+            finally:
+                if os.path.exists(temp_txt_path):
+                    try: os.remove(temp_txt_path)
+                    except: pass
         voice_segments.append(seg_path)
         
         dur = get_audio_duration(seg_path)
@@ -67,33 +92,40 @@ def generate_voiceover():
         
     # Check if target duration preset is specified, and pad the last slide if narration is shorter
     target_dur = getattr(config, "TARGET_DURATION", None)
+    needed_pad = 0
     if target_dur:
         voice_dur = sum(durations)
-        if voice_dur < target_dur:
+        if voice_dur < target_dur and durations:
             needed_pad = target_dur - voice_dur
-            durations[3] += needed_pad
-            print(f"Padding slide 4 duration by {needed_pad:.2f}s to meet the {target_dur}s preset.")
+            durations[-1] += needed_pad
 
     # Update global timings
-    config.SLIDE_TIMINGS = [
-        durations[0],
-        durations[0] + durations[1],
-        durations[0] + durations[1] + durations[2],
-        durations[0] + durations[1] + durations[2] + durations[3]
-    ]
+    timing = 0
+    config.SLIDE_TIMINGS = []
+    for d in durations:
+        timing += d
+        config.SLIDE_TIMINGS.append(timing)
     
     # Concatenate audio segments using FFmpeg
     voice_mp3 = os.path.join(config.TOPIC_TEMP_DIR, "voice.mp3")
-    cmd_concat = [
-        "ffmpeg", "-y",
-        "-i", voice_segments[0],
-        "-i", voice_segments[1],
-        "-i", voice_segments[2],
-        "-i", voice_segments[3],
-        "-filter_complex", "[0:a][1:a][2:a][3:a]concat=n=4:v=0:a=1[out]",
-        "-map", "[out]", voice_mp3
-    ]
-    subprocess.run(cmd_concat, check=True)
+    n = len(voice_segments)
+    inputs_str = "".join([f"[{i}:a]" for i in range(n)])
+    cmd_concat = ["ffmpeg", "-y"]
+    for seg in voice_segments:
+        cmd_concat.extend(["-i", seg])
+    cmd_concat.extend(["-filter_complex", f"{inputs_str}concat=n={n}:v=0:a=1[out]", "-map", "[out]", voice_mp3])
+    subprocess.run(cmd_concat, check=True, stdin=subprocess.DEVNULL)
+    
+    if needed_pad > 0:
+        padded_path = os.path.join(config.TOPIC_TEMP_DIR, "voice_padded.mp3")
+        pad_cmd = [
+            "ffmpeg", "-y", "-i", voice_mp3,
+            "-af", f"apad=pad_dur={needed_pad:.3f}",
+            padded_path
+        ]
+        subprocess.run(pad_cmd, check=True, stdin=subprocess.DEVNULL)
+        os.replace(padded_path, voice_mp3)
+        print(f"Padded final audio by {needed_pad:.2f}s to reach target {target_dur:.2f}s")
     
     voice_dur = sum(durations)
     print(f"Total concatenated voice duration: {voice_dur:.2f} seconds.")

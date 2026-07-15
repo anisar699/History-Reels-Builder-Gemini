@@ -6,16 +6,19 @@ import contextlib
 import importlib
 import streamlit as st
 
-# Force reload of history_reels modules to prevent Streamlit caching errors
-for mod in list(sys.modules.keys()):
-    if mod.startswith("history_reels"):
-        try:
-            importlib.reload(sys.modules[mod])
-        except Exception:
-            pass
-
 from history_reels import config
 from history_reels.cli import generate_video_for_topic
+
+def detect_ollama_models() -> list[str]:
+    import requests
+    try:
+        r = requests.get("http://localhost:11434/api/tags", timeout=2)
+        if r.status_code == 200:
+            data = r.json()
+            return [m["name"] for m in data.get("models", [])]
+    except Exception:
+        pass
+    return []
 
 @st.cache_data
 def get_edge_tts_voices():
@@ -114,62 +117,222 @@ st.set_page_config(
 # Dark theme premium styling
 st.markdown("""
 <style>
-    /* Styling for Streamlit App */
-    .stApp {
-        background-color: #0b0c10;
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap');
+
+    /* Main app setup */
+    html, body, [data-testid="stAppViewContainer"] {
+        font-family: 'Inter', sans-serif;
+        background-color: #080a0f !important;
+        background-image: radial-gradient(circle at 10% 20%, rgba(255, 215, 0, 0.02) 0%, transparent 40%),
+                          radial-gradient(circle at 90% 80%, rgba(255, 165, 0, 0.01) 0%, transparent 45%) !important;
         color: #c5c6c7;
     }
+
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background-color: #0e121b !important;
+        border-right: 1px solid rgba(255, 255, 255, 0.05) !important;
+    }
+
+    /* Header styling */
+    @keyframes gradient-flow {
+        0% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
+    }
+    
+    @keyframes title-glow {
+        0% { filter: drop-shadow(0 0 8px rgba(255, 215, 0, 0.3)); }
+        50% { filter: drop-shadow(0 0 25px rgba(255, 94, 98, 0.6)); }
+        100% { filter: drop-shadow(0 0 8px rgba(255, 215, 0, 0.3)); }
+    }
+
     .main-title {
-        font-family: 'Outfit', 'Inter', sans-serif;
-        font-size: 3rem !important;
-        font-weight: 800;
-        background: linear-gradient(45deg, #00d2ff, #3a7bd5, #ffd700);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        text-align: center;
-        margin-bottom: 0.5rem;
+        font-family: 'Outfit', sans-serif !important;
+        font-size: 3.8rem !important;
+        font-weight: 900 !important;
+        background: linear-gradient(270deg, #FFD700, #ff5e62, #ff9966, #FFD700) !important;
+        background-size: 300% 300% !important;
+        -webkit-background-clip: text !important;
+        -webkit-text-fill-color: transparent !important;
+        text-align: center !important;
+        margin-bottom: 0.1rem !important;
+        letter-spacing: -2px;
+        animation: gradient-flow 8s ease infinite, title-glow 4s ease-in-out infinite !important;
     }
+
     .subtitle {
-        text-align: center;
-        font-size: 1.1rem;
-        color: #85858f;
-        margin-bottom: 2rem;
+        font-family: 'Inter', sans-serif;
+        text-align: center !important;
+        font-size: 1.05rem !important;
+        color: #8E9BB0 !important;
+        margin-bottom: 2.5rem !important;
     }
-    .premium-card {
-        background-color: #1f2833;
-        border-radius: 12px;
-        padding: 1.5rem;
-        border: 1px solid #45f3ff;
-        margin-bottom: 1.5rem;
-    }
+
+    /* Widget Header design */
     .widget-title {
-        font-size: 1.2rem;
-        font-weight: 600;
-        color: #66fcf1;
-        margin-bottom: 1rem;
+        font-family: 'Outfit', sans-serif !important;
+        font-size: 0.95rem !important;
+        font-weight: 700 !important;
+        color: #FFD700 !important;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        margin-top: 1.5rem !important;
+        margin-bottom: 0.8rem !important;
+        border-left: 3px solid #FFA500;
+        padding-left: 8px;
+    }
+
+    /* Premium Cards styling */
+    div.stCard, .premium-card, [data-testid="stForm"] {
+        background: rgba(20, 26, 38, 0.6) !important;
+        backdrop-filter: blur(12px) !important;
+        -webkit-backdrop-filter: blur(12px) !important;
+        border: 1px solid rgba(255, 215, 0, 0.12) !important;
+        border-radius: 16px !important;
+        padding: 1.5rem !important;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3) !important;
+        margin-bottom: 1.5rem !important;
+        transition: all 0.3s ease !important;
+    }
+
+    div.stCard:hover, .premium-card:hover {
+        border: 1px solid rgba(255, 215, 0, 0.3) !important;
+        box-shadow: 0 12px 40px 0 rgba(255, 215, 0, 0.05), 0 8px 32px 0 rgba(0, 0, 0, 0.4) !important;
+    }
+
+    /* Custom button styling overrides */
+    .stButton > button, div[data-testid="stFormSubmitButton"] button {
+        font-family: 'Outfit', sans-serif !important;
+        font-weight: 700 !important;
+        font-size: 1rem !important;
+        background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%) !important;
+        color: #080a0f !important;
+        border: none !important;
+        border-radius: 12px !important;
+        padding: 0.6rem 2rem !important;
+        box-shadow: 0 4px 15px rgba(255, 165, 0, 0.2) !important;
+        transition: all 0.25s ease !important;
+        width: 100% !important;
+    }
+
+    .stButton > button:hover, div[data-testid="stFormSubmitButton"] button:hover {
+        background: linear-gradient(135deg, #FFE4B5 0%, #FF8C00 100%) !important;
+        box-shadow: 0 6px 20px rgba(255, 165, 0, 0.4) !important;
+    }
+
+    /* Secondary Button styling */
+    [data-testid="stSidebar"] .stButton > button {
+        background: rgba(255, 255, 255, 0.05) !important;
+        color: #FFFFFF !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        box-shadow: none !important;
+    }
+
+    [data-testid="stSidebar"] .stButton > button:hover {
+        background: rgba(255, 255, 255, 0.1) !important;
+        border: 1px solid rgba(255, 215, 0, 0.4) !important;
+    }
+
+    /* Style Selectboxes and Inputs */
+    div[data-baseweb="select"] > div {
+        background-color: #11141e !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 10px !important;
+        color: #FFFFFF !important;
+    }
+
+    div[data-baseweb="input"] > div {
+        background-color: #11141e !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 10px !important;
+        color: #FFFFFF !important;
+    }
+
+    /* Text area input styling */
+    textarea {
+        background-color: #11141e !important;
+        color: #FFFFFF !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 12px !important;
+    }
+
+    /* Expander styling */
+    details {
+        background-color: #0f131c !important;
+        border-radius: 12px !important;
+        border: 1px solid rgba(255, 215, 0, 0.08) !important;
+        margin-bottom: 1rem !important;
+    }
+
+    /* Tabs styling */
+    div[data-testid="stTabBar"] button {
+        font-family: 'Outfit', sans-serif !important;
+        font-weight: 600 !important;
+        font-size: 1.05rem !important;
+        color: #8E9BB0 !important;
+        transition: all 0.3s ease !important;
+    }
+
+    div[data-testid="stTabBar"] button[aria-selected="true"] {
+        color: #FFD700 !important;
+        border-bottom-color: #FFD700 !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # Context manager to redirect stdout/stderr to a Streamlit code block
 @contextlib.contextmanager
-def redirect_stdout_to_streamlit(placeholder):
+def redirect_stdout_to_streamlit(placeholder, progress_bar=None, status_text=None):
     original_stdout = sys.stdout
     original_stderr = sys.stderr
     
     class WebConsoleWriter:
-        def __init__(self):
-            self.content = ""
-        def write(self, string):
-            if string:
-                self.content += string
-                # Keep last 100 lines for the log output view
-                lines = self.content.splitlines()[-100:]
-                placeholder.code("\n".join(lines))
-        def flush(self):
-            pass
+        def __init__(self, placeholder, progress_bar, status_text):
+            self.placeholder = placeholder
+            self.progress_bar = progress_bar
+            self.status_text = status_text
+            self.buffer = ""
+            self.current_progress = 0
+
+        def update_progress(self, percent, msg):
+            if percent > self.current_progress:
+                self.current_progress = percent
+                if self.progress_bar:
+                    self.progress_bar.progress(self.current_progress)
+                if self.status_text:
+                    self.status_text.markdown(f"**{msg} ({self.current_progress}%)**")
+
+        def write(self, text):
+            self.buffer += text
+            self.buffer = self.buffer[-5000:]
+            sys.__stdout__.write(text) # Also write to real console
             
-    writer = WebConsoleWriter()
+            # Real-time Progress Parsing
+            lower_text = text.lower()
+            if "generating ai script" in lower_text or "structuring raw script" in lower_text:
+                self.update_progress(10, "✍️ Generating AI script...")
+            elif "searching for" in lower_text or "downloading" in lower_text:
+                self.update_progress(30, "🔍 Fetching stock media...")
+            elif "generating voiceover" in lower_text or "edge-tts" in lower_text or "elevenlabs" in lower_text:
+                self.update_progress(50, "🎙️ Synthesizing voiceover...")
+            elif "extracting clips" in lower_text or "processing video" in lower_text:
+                self.update_progress(70, "✂️ Preparing video clips...")
+            elif "crossfading clips" in lower_text or "merging final" in lower_text:
+                self.update_progress(85, "🎞️ Rendering final video...")
+            elif "success! created video" in lower_text or "deliverables copied" in lower_text:
+                self.update_progress(100, "✅ Done!")
+
+            if "\n" in text:
+                # Only update UI when a line is complete to reduce lag
+                # Keep only the last 2000 characters to prevent huge UI slow downs
+                display_text = self.buffer[-2000:] if len(self.buffer) > 2000 else self.buffer
+                self.placeholder.code(display_text, language="bash")
+
+        def flush(self):
+            sys.__stdout__.flush()
+            
+    writer = WebConsoleWriter(placeholder, progress_bar, status_text)
     sys.stdout = writer
     sys.stderr = writer
     try:
@@ -180,125 +343,364 @@ def redirect_stdout_to_streamlit(placeholder):
 
 # Main Layout
 st.markdown("<h1 class='main-title'>🎥 AI CONTENT ENGINE</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>Generate premium short-form historical reels with Urdu script & AI Voiceovers in 1 click.</p>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>Deploy premium short-form viral AI reels with multi-lingual scripts & advanced TTS engines in a single click.</p>", unsafe_allow_html=True)
+
+# Initialize Session State
+if "uploaded_df" not in st.session_state:
+    st.session_state["uploaded_df"] = None
+if "fetched_articles" not in st.session_state:
+    st.session_state["fetched_articles"] = []
+if "feed_url_cache" not in st.session_state:
+    st.session_state["feed_url_cache"] = ""
+if "selected_article_data" not in st.session_state:
+    st.session_state["selected_article_data"] = None
 
 # Sidebar Control Panel
 with st.sidebar:
-    st.markdown("<div class='widget-title'>⚙️ GENERATOR SETTINGS</div>", unsafe_allow_html=True)
-    
-    provider = st.selectbox(
-        "AI Content Provider",
-        options=["gemini", "openai", "groq", "ollama", "openrouter"],
-        index=0,
-        help="Select the AI model provider to write scripts and create SEO content."
-    )
-    
-    if provider == "ollama":
-        st.info("💡 Local Mode: Uses 'qwen2.5:3b' model. Ensure Ollama service is running.")
-        
-    vibe_selection = st.selectbox(
-        "Background Music Vibe",
-        options=["random", "mystery", "epic", "sad", "ancient"],
-        index=0,
-        help="Custom soundtrack feel. 'random' will choose a random vibe."
-    )
-    
-    media_selection = st.selectbox(
-        "Media Type Preference",
-        options=["Mixed (Videos + Images)", "Videos Only", "Images Only"],
-        index=0,
-        help="Select preference for source assets: Mixed (videos first, images fallback), Videos Only, or Images Only (useful for vintage photos)."
-    )
-    
-    pref_mapping = {
-        "Mixed (Videos + Images)": "mixed",
-        "Videos Only": "videos",
-        "Images Only": "images"
-    }
-    config.MEDIA_PREFERENCE = pref_mapping[media_selection]
-    
-    size_preset = st.selectbox(
-        "Video Size / Aspect Ratio",
-        options=["Vertical (9:16) - Reels/TikTok", "Landscape (16:9) - YouTube", "Square (1:1) - Post"],
-        index=0,
-        help="Select the aspect ratio and frame size preset for compiled videos."
-    )
-    size_map = {
-        "Vertical (9:16) - Reels/TikTok": (720, 1280),
-        "Landscape (16:9) - YouTube": (1280, 720),
-        "Square (1:1) - Post": (1080, 1080)
-    }
-    config.VIDEO_WIDTH, config.VIDEO_HEIGHT = size_map[size_preset]
-    
-    duration_preset = st.selectbox(
-        "Video Duration Preset",
-        options=["Free (Auto)", "10 seconds", "20 seconds", "30 seconds", "45 seconds", "60 seconds", "2 minutes", "3 minutes", "5 minutes", "10 minutes"],
-        index=0,
-        help="Specify the target duration preset for the final compiled video reel."
-    )
-    preset_map = {
-        "Free (Auto)": None,
-        "10 seconds": 10,
-        "20 seconds": 20,
-        "30 seconds": 30,
-        "45 seconds": 45,
-        "60 seconds": 60,
-        "2 minutes": 120,
-        "3 minutes": 180,
-        "5 minutes": 300,
-        "10 minutes": 600
-    }
-    config.TARGET_DURATION = preset_map[duration_preset]
-    
-    voice_provider = st.selectbox(
-        "Voice Narrator Provider",
-        options=["Edge-TTS (Free)", "ElevenLabs (Realistic)"],
-        index=0,
-        help="Select the TTS voice synthesizer engine."
-    )
-    
-    if voice_provider == "ElevenLabs (Realistic)":
-        config.VOICE_PROVIDER = "elevenlabs"
-        config.ELEVENLABS_VOICE_ID = st.text_input(
-            "ElevenLabs Voice ID", 
-            value=getattr(config, "ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM") or "21m00Tcm4TlvDq8ikWAM"
+
+    with st.expander("🤖 AI Models & Base Settings", expanded=True):
+        provider = st.selectbox(
+            "AI Content Provider",
+            options=["auto", "gemini", "openai", "groq", "ollama", "openrouter"],
+            format_func=lambda x: "Auto" if x == "auto" else (x.upper() if x in ["openai", "ollama", "groq"] else x.capitalize()),
+            index=0,
+            help="Select 'Auto' for the ultimate fail-proof fallback chain."
         )
-    else:
-        config.VOICE_PROVIDER = "edge-tts"
-        voices_list = get_edge_tts_voices()
-        voice_options = [v["display"] for v in voices_list]
-        default_voice = getattr(config, "VOICE_ID", "ur-PK-AsadNeural")
-        default_index = 0
-        for idx, v in enumerate(voices_list):
-            if v["id"] == default_voice:
-                default_index = idx
-                break
-        selected_display = st.selectbox(
-            "Microsoft Edge Voice Narrator",
-            options=voice_options,
-            index=default_index,
-            help="Select the Microsoft Edge narrator voice for voiceovers."
-        )
-        selected_voice_id = next(v["id"] for v in voices_list if v["display"] == selected_display)
-        config.VOICE_ID = selected_voice_id
+    
+        if provider == "ollama":
+            local_models = detect_ollama_models()
+            if local_models:
+                default_model = getattr(config, "OLLAMA_MODEL", "qwen2.5:3b")
+                default_idx = 0
+                if default_model in local_models:
+                    default_idx = local_models.index(default_model)
+                selected_ollama = st.selectbox(
+                    "Ollama Model",
+                    options=local_models,
+                    index=default_idx,
+                    help="Select the local model running on your Ollama service."
+                )
+                config.OLLAMA_MODEL = selected_ollama
+            else:
+                import socket
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1.0)
+                is_running = sock.connect_ex(("127.0.0.1", 11434)) == 0
+                sock.close()
+            
+                if is_running:
+                    st.warning("⚠️ Ollama is running, but no models were found.")
+                    st.info("💡 Download a model by running: `ollama pull qwen2.5:3b` in your terminal.")
+                else:
+                    st.error("❌ Ollama service not detected on localhost:11434.")
+                    st.info("💡 Please start the Ollama desktop app or service on your PC.")
+                
+                manual_model = st.text_input(
+                    "Ollama Model Name (Manual)",
+                    value=getattr(config, "OLLAMA_MODEL", "qwen2.5:3b"),
+                    help="Specify model name manually."
+                )
+                config.OLLAMA_MODEL = manual_model
         
-    st.markdown("---")
-    st.markdown("<div class='widget-title'>🔑 API KEYS CONFIGURATION</div>", unsafe_allow_html=True)
+        duration_preset = st.selectbox(
+            "Video Duration Preset",
+            options=["Free (Auto)", "10 seconds", "20 seconds", "30 seconds", "45 seconds", "60 seconds", "2 minutes", "3 minutes", "5 minutes", "10 minutes"],
+            index=0,
+            help="Specify the target duration preset for the final compiled video reel."
+        )
+        preset_map = {
+            "Free (Auto)": None,
+            "10 seconds": 10,
+            "20 seconds": 20,
+            "30 seconds": 30,
+            "45 seconds": 45,
+            "60 seconds": 60,
+            "2 minutes": 120,
+            "3 minutes": 180,
+            "5 minutes": 300,
+            "10 minutes": 600
+        }
+        config.TARGET_DURATION = preset_map[duration_preset]
     
-    new_gemini = st.text_input("Gemini API Key", value=config.GEMINI_API_KEY or "", type="password")
-    new_openai = st.text_input("OpenAI API Key", value=config.OPENAI_API_KEY or "", type="password")
-    new_groq = st.text_input("Groq API Key", value=config.GROQ_API_KEY or "", type="password")
-    new_openrouter = st.text_input("OpenRouter API Key", value=getattr(config, "OPENROUTER_API_KEY", "") or "", type="password")
-    new_elevenlabs = st.text_input("ElevenLabs API Key", value=getattr(config, "ELEVENLABS_API_KEY", "") or "", type="password")
-    new_pexels = st.text_input("Pexels API Key", value=config.PEXELS_API_KEY or "", type="password")
-    new_pixabay = st.text_input("Pixabay API Key", value=config.PIXABAY_API_KEY or "", type="password")
-    new_story_pub = st.text_input("Storyblocks Public Key", value=getattr(config, "STORYBLOCKS_PUBLIC_KEY", "") or "", type="password")
-    new_story_priv = st.text_input("Storyblocks Private Key", value=getattr(config, "STORYBLOCKS_PRIVATE_KEY", "") or "", type="password")
+        media_selection = st.selectbox(
+            "Media Type Preference",
+            options=["Mixed (Videos + Images)", "Videos Only", "Images Only"],
+            index=0,
+            help="Select preference for source assets: Mixed (videos first, images fallback), Videos Only, or Images Only (useful for vintage photos)."
+        )
     
-    if st.button("Save & Reload Keys 💾", use_container_width=True):
-        # Update local .env file in the workspace root
-        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-        env_content = f"""PEXELS_API_KEY={new_pexels.strip()}
+        pref_mapping = {
+            "Mixed (Videos + Images)": "mixed",
+            "Videos Only": "videos",
+            "Images Only": "images"
+        }
+        config.MEDIA_PREFERENCE = pref_mapping[media_selection]
+    
+        allowed_sources = st.multiselect(
+            "Allowed Media Sources",
+            options=["Pexels (Videos)", "Pixabay (Videos)", "Storyblocks (Videos)", "Google/Bing (Images)", "Pinterest (Images)", "Wikimedia Commons (Images)", "NASA (Images)", "Internet Archive (Videos)", "Unsplash (Images)"],
+            default=["Pexels (Videos)", "Pixabay (Videos)", "Google/Bing (Images)", "Pinterest (Images)", "Wikimedia Commons (Images)"],
+            help="Check the stock sites you want to fetch media from. Uncheck to block a site."
+        )
+    
+        source_mapping = {
+            "Pexels (Videos)": "pexels",
+            "Pixabay (Videos)": "pixabay",
+            "Storyblocks (Videos)": "storyblocks",
+            "Google/Bing (Images)": "google",
+            "Pinterest (Images)": "pinterest",
+            "Wikimedia Commons (Images)": "wikimedia_image",
+            "NASA (Images)": "nasa_image",
+            "Internet Archive (Videos)": "archive",
+            "Unsplash (Images)": "unsplash"
+        }
+        config.ALLOWED_SOURCES = [source_mapping[s] for s in allowed_sources]
+    
+        size_preset = st.selectbox(
+            "Video Size / Aspect Ratio",
+            options=["Vertical (9:16) - Reels/TikTok", "Landscape (16:9) - YouTube", "Square (1:1) - Post"],
+            index=0,
+            help="Select the aspect ratio and frame size preset for compiled videos."
+        )
+        size_map = {
+            "Vertical (9:16) - Reels/TikTok": (720, 1280),
+            "Landscape (16:9) - YouTube": (1280, 720),
+            "Square (1:1) - Post": (1080, 1080)
+        }
+        config.VIDEO_WIDTH, config.VIDEO_HEIGHT = size_map[size_preset]
+
+    with st.expander("🎧 Audio & Voice", expanded=False):
+        voice_provider = st.selectbox(
+            "Voice Narrator Provider",
+            options=["Edge-TTS (Free)", "ElevenLabs (Realistic)"],
+            index=0,
+            help="Select the TTS voice synthesizer engine."
+        )
+    
+        voice_pitch = st.selectbox(
+            "Voice Emotion / Pitch",
+            options=["Default", "Deep & Serious (Horror)", "High & Excited (Tech/News)"],
+            index=0,
+            help="Adjust the vocal pitch to match the video's mood."
+        )
+        pitch_map = {"Default": "default", "Deep & Serious (Horror)": "-15Hz", "High & Excited (Tech/News)": "+15Hz"}
+        config.VOICE_PITCH = pitch_map[voice_pitch]
+    
+        if voice_provider == "ElevenLabs (Realistic)":
+            config.VOICE_PROVIDER = "elevenlabs"
+            config.ELEVENLABS_VOICE_ID = st.text_input(
+                "ElevenLabs Voice ID", 
+                value=getattr(config, "ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM") or "21m00Tcm4TlvDq8ikWAM"
+            )
+        else:
+            config.VOICE_PROVIDER = "edge-tts"
+            voices_list = get_edge_tts_voices()
+            voice_options = [v["display"] for v in voices_list]
+            default_voice = getattr(config, "VOICE_ID", "ur-PK-AsadNeural")
+            default_index = 0
+            for idx, v in enumerate(voices_list):
+                if v["id"] == default_voice:
+                    default_index = idx
+                    break
+            selected_display = st.selectbox(
+                "Microsoft Edge Voice Narrator",
+                options=voice_options,
+                index=default_index,
+                help="Select the Microsoft Edge narrator voice for voiceovers."
+            )
+            selected_voice_id = next((v["id"] for v in voices_list if v["display"] == selected_display), voices_list[0]["id"] if voices_list else "ur-PK-AsadNeural")
+            config.VOICE_ID = selected_voice_id
+        
+        vibe_selection = st.selectbox(
+            "Background Music Vibe",
+            options=["random", "mystery", "epic", "sad", "ancient", "modern", "intense"],
+            index=0,
+            help="Custom soundtrack feel. 'random' will choose a random vibe."
+        )
+    
+        ambient_sound = st.selectbox(
+            "Ambient Soundscape",
+            options=["None", "Rain & Thunder", "Wind & Forest", "Intense Rumble (Horror)"],
+            index=0,
+            help="Automatically mixes dynamic ambient noise into the background."
+        )
+        ambient_map = {"None": None, "Rain & Thunder": "rain", "Wind & Forest": "wind", "Intense Rumble (Horror)": "rumble"}
+        config.AMBIENT_SOUND = ambient_map[ambient_sound]
+    
+        audio_ducking = st.checkbox("Smart Audio Ducking", value=True, help="Automatically lowers background music when the narrator speaks, and raises it during pauses.")
+        config.AUDIO_DUCKING = audio_ducking
+    
+        voice_mastering = st.checkbox("Voice Mastering (EQ & Compression)", value=True, help="Applies equalizer (bass boost) and compression to make the voice sound rich and professional.")
+        config.VOICE_MASTERING = voice_mastering
+
+    with st.expander("🎬 Visuals & Transitions", expanded=False):
+        visual_pacing = st.selectbox(
+            "Visual Clip Pacing",
+            options=["Fast (approx. 3s per cut)", "Medium (approx. 5s per cut)", "Slow (approx. 7s per cut)"],
+            index=1,
+            help="Select the target pacing. Faster pacing keeps viewers more engaged by cutting between clips frequently."
+        )
+        pacing_map = {
+            "Fast (approx. 3s per cut)": 3.0,
+            "Medium (approx. 5s per cut)": 5.0,
+            "Slow (approx. 7s per cut)": 7.0
+        }
+        config.CLIP_DURATION_TARGET = pacing_map[visual_pacing]
+    
+        transition_selection = st.selectbox(
+            "Slide Transition Effect",
+            options=["Fade (Crossfade)", "Slide Left", "Slide Right", "Slide Up", "Slide Down", "Wipe Left", "Wipe Right", "Zoom In", "Dissolve", "Pixelize (Mosaic)", "Radial", "Random (Mix)"],
+            index=0,
+            help="Select the visual transition style between clips."
+        )
+        trans_map = {
+            "Fade (Crossfade)": "fade",
+            "Slide Left": "slideleft",
+            "Slide Right": "slideright",
+            "Slide Up": "slideup",
+            "Slide Down": "slidedown",
+            "Wipe Left": "wipeleft",
+            "Wipe Right": "wiperight",
+            "Zoom In": "zoomin",
+            "Dissolve": "dissolve",
+            "Pixelize (Mosaic)": "pixelize",
+            "Radial": "radial",
+            "Random (Mix)": "random"
+        }
+        config.VIDEO_TRANSITION = trans_map[transition_selection]
+    
+        camera_shake = st.checkbox(
+            "Transition Camera Shake",
+            value=False,
+            help="Adds a dynamic high-energy camera rumble vibration effect during clip transitions."
+        )
+        config.CAMERA_SHAKE = camera_shake
+    
+        trans_sfx = st.checkbox("Transition WHOOSH Sound Effect", value=False, help="Synthesizes and injects high-energy whoosh sound effects at every transition point.")
+        config.TRANSITION_SFX = trans_sfx
+    
+        color_lut = st.selectbox(
+            "Cinematic Color Grading (LUTs)",
+            options=["None", "Horror Dark", "Cyberpunk Neon", "Vintage 1980s", "Documentary High Contrast"],
+            index=0,
+            help="Applies a global color grading filter to all clips."
+        )
+        lut_map = {
+            "None": None, 
+            "Horror Dark": "horror", 
+            "Cyberpunk Neon": "cyberpunk", 
+            "Vintage 1980s": "vintage", 
+            "Documentary High Contrast": "documentary"
+        }
+        config.COLOR_FILTER = lut_map[color_lut]
+    
+        cinematic_grain = st.checkbox("Cinematic Noise/Film Grain", value=False, help="Adds vintage moving film grain/noise to background footage.")
+        config.CINEMATIC_GRAIN = cinematic_grain
+
+    with st.expander("🏷️ Branding & Overlays", expanded=False):
+        # Font Settings
+        custom_font = st.file_uploader("Upload Custom Urdu/English Font (.ttf)", type=["ttf", "otf"])
+        if custom_font:
+            os.makedirs(os.path.join(config.OUTPUT_DIR, "fonts"), exist_ok=True)
+            font_save_path = os.path.join(config.OUTPUT_DIR, "fonts", "custom.ttf")
+            with open(font_save_path, "wb") as f:
+                f.write(custom_font.getbuffer())
+            config.FONT_PATH = font_save_path
+            st.success("Custom font loaded successfully!")
+    
+        # Bumper Settings
+        col_intro, col_outro = st.columns(2)
+        with col_intro:
+            intro_vid = st.file_uploader("Upload Intro Bumper (.mp4)", type=["mp4"])
+            if intro_vid:
+                os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+                intro_path = os.path.join(config.OUTPUT_DIR, "intro_bumper.mp4")
+                with open(intro_path, "wb") as f:
+                    f.write(intro_vid.getbuffer())
+                config.INTRO_BUMPER = intro_path
+            else:
+                config.INTRO_BUMPER = None
+            
+        with col_outro:
+            outro_vid = st.file_uploader("Upload Outro Bumper (.mp4)", type=["mp4"])
+            if outro_vid:
+                os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+                outro_path = os.path.join(config.OUTPUT_DIR, "outro_bumper.mp4")
+                with open(outro_path, "wb") as f:
+                    f.write(outro_vid.getbuffer())
+                config.OUTRO_BUMPER = outro_path
+            else:
+                config.OUTRO_BUMPER = None
+            
+        # Progress Bar Settings
+        show_bar = st.checkbox("Show Video Progress Bar", value=True, help="Draws an animated growing timeline line at the bottom of the video.")
+        config.SHOW_PROGRESS_BAR = show_bar
+        if show_bar:
+            bar_color = st.selectbox(
+                "Progress Bar Color",
+                options=["Gold", "Red", "Blue", "Green", "White", "Purple"],
+                index=0
+            )
+            config.PROGRESS_BAR_COLOR = bar_color.lower()
+            bar_height = st.slider("Progress Bar Height (px)", min_value=2, max_value=20, value=8)
+            config.PROGRESS_BAR_HEIGHT = bar_height
+        
+        # Text Watermark & Grain
+        watermark_text = st.text_input("Text Watermark Handle", value="", placeholder="e.g., @UrduHistory_AI", help="Draws a translucent text brand handle bottom-center of the video.")
+        config.WATERMARK_TEXT = watermark_text
+    
+        # Brand Watermark Settings
+        show_logo = st.checkbox("Show Brand Watermark Logo", value=False, help="Overlay a custom translucent brand logo image.")
+        config.SHOW_WATERMARK = show_logo
+        if show_logo:
+            logo_file = st.file_uploader("Upload Logo Image (PNG only)", type=["png"])
+            if logo_file:
+                # Save to history videos folder
+                os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+                logo_path = os.path.join(config.OUTPUT_DIR, "watermark.png")
+                with open(logo_path, "wb") as f:
+                    f.write(logo_file.getbuffer())
+                st.success("Logo uploaded successfully!")
+            
+            # Check if logo exists to enable size/opacity settings
+            logo_path = os.path.join(config.OUTPUT_DIR, "watermark.png")
+            if os.path.exists(logo_path):
+                st.image(logo_path, caption="Active Watermark Logo", width=100)
+                logo_size = st.slider("Logo Size (width in px)", min_value=40, max_value=250, value=100)
+                config.WATERMARK_SIZE = logo_size
+                logo_opacity = st.slider("Logo Opacity", min_value=0.1, max_value=1.0, value=0.5, step=0.05)
+                config.WATERMARK_OPACITY = logo_opacity
+            
+                pos_selection = st.selectbox(
+                    "Logo Position",
+                    options=["Top-Right", "Top-Left", "Bottom-Right", "Bottom-Left"],
+                    index=0
+                )
+                pos_map = {
+                    "Top-Right": "main_w-overlay_w-20:20",
+                    "Top-Left": "20:20",
+                    "Bottom-Right": "main_w-overlay_w-20:main_h-overlay_h-20",
+                    "Bottom-Left": "20:main_h-overlay_h-20"
+                }
+                config.WATERMARK_POSITION = pos_map[pos_selection]
+            else:
+                st.warning("⚠️ Please upload a PNG logo to see settings.")
+
+    with st.expander("🔑 API Keys Configuration", expanded=False):
+        new_gemini = st.text_input("Gemini API Key", value=config.GEMINI_API_KEY or "", type="password")
+        new_openai = st.text_input("OpenAI API Key", value=config.OPENAI_API_KEY or "", type="password")
+        new_groq = st.text_input("Groq API Key", value=config.GROQ_API_KEY or "", type="password")
+        new_openrouter = st.text_input("OpenRouter API Key", value=getattr(config, "OPENROUTER_API_KEY", "") or "", type="password")
+        new_elevenlabs = st.text_input("ElevenLabs API Key", value=getattr(config, "ELEVENLABS_API_KEY", "") or "", type="password")
+        new_pexels = st.text_input("Pexels API Key", value=config.PEXELS_API_KEY or "", type="password")
+        new_pixabay = st.text_input("Pixabay API Key", value=config.PIXABAY_API_KEY or "", type="password")
+        new_story_pub = st.text_input("Storyblocks Public Key", value=getattr(config, "STORYBLOCKS_PUBLIC_KEY", "") or "", type="password")
+        new_story_priv = st.text_input("Storyblocks Private Key", value=getattr(config, "STORYBLOCKS_PRIVATE_KEY", "") or "", type="password")
+    
+        if st.button("Save & Reload Keys 💾", use_container_width=True):
+            # Update local .env file in the workspace root
+            env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+            env_content = f"""PEXELS_API_KEY={new_pexels.strip()}
 PIXABAY_API_KEY={new_pixabay.strip()}
 OPENAI_API_KEY={new_openai.strip()}
 GEMINI_API_KEY={new_gemini.strip()}
@@ -310,33 +712,33 @@ VOICE_PROVIDER={getattr(config, "VOICE_PROVIDER", "edge-tts").strip()}
 STORYBLOCKS_PUBLIC_KEY={new_story_pub.strip()}
 STORYBLOCKS_PRIVATE_KEY={new_story_priv.strip()}
 """
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.write(env_content)
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.write(env_content)
+                
+            # Update config singleton attributes instantly
+            config.GEMINI_API_KEY = new_gemini.strip()
+            config.OPENAI_API_KEY = new_openai.strip()
+            config.GROQ_API_KEY = new_groq.strip()
+            config.OPENROUTER_API_KEY = new_openrouter.strip()
+            config.ELEVENLABS_API_KEY = new_elevenlabs.strip()
+            config.PEXELS_API_KEY = new_pexels.strip()
+            config.PIXABAY_API_KEY = new_pixabay.strip()
+            config.STORYBLOCKS_PUBLIC_KEY = new_story_pub.strip()
+            config.STORYBLOCKS_PRIVATE_KEY = new_story_priv.strip()
             
-        # Update config singleton attributes instantly
-        config.GEMINI_API_KEY = new_gemini.strip()
-        config.OPENAI_API_KEY = new_openai.strip()
-        config.GROQ_API_KEY = new_groq.strip()
-        config.OPENROUTER_API_KEY = new_openrouter.strip()
-        config.ELEVENLABS_API_KEY = new_elevenlabs.strip()
-        config.PEXELS_API_KEY = new_pexels.strip()
-        config.PIXABAY_API_KEY = new_pixabay.strip()
-        config.STORYBLOCKS_PUBLIC_KEY = new_story_pub.strip()
-        config.STORYBLOCKS_PRIVATE_KEY = new_story_priv.strip()
-        
-        # Update os.environ
-        os.environ["GEMINI_API_KEY"] = new_gemini.strip()
-        os.environ["OPENAI_API_KEY"] = new_openai.strip()
-        os.environ["GROQ_API_KEY"] = new_groq.strip()
-        os.environ["OPENROUTER_API_KEY"] = new_openrouter.strip()
-        os.environ["ELEVENLABS_API_KEY"] = new_elevenlabs.strip()
-        os.environ["PEXELS_API_KEY"] = new_pexels.strip()
-        os.environ["PIXABAY_API_KEY"] = new_pixabay.strip()
-        os.environ["STORYBLOCKS_PUBLIC_KEY"] = new_story_pub.strip()
-        os.environ["STORYBLOCKS_PRIVATE_KEY"] = new_story_priv.strip()
-        
-        st.toast("API Keys saved to .env & reloaded!", icon="💾")
-        st.rerun()
+            # Update os.environ
+            os.environ["GEMINI_API_KEY"] = new_gemini.strip()
+            os.environ["OPENAI_API_KEY"] = new_openai.strip()
+            os.environ["GROQ_API_KEY"] = new_groq.strip()
+            os.environ["OPENROUTER_API_KEY"] = new_openrouter.strip()
+            os.environ["ELEVENLABS_API_KEY"] = new_elevenlabs.strip()
+            os.environ["PEXELS_API_KEY"] = new_pexels.strip()
+            os.environ["PIXABAY_API_KEY"] = new_pixabay.strip()
+            os.environ["STORYBLOCKS_PUBLIC_KEY"] = new_story_pub.strip()
+            os.environ["STORYBLOCKS_PRIVATE_KEY"] = new_story_priv.strip()
+            
+            st.toast("API Keys saved to .env & reloaded!", icon="💾")
+            st.rerun()
 
 tabs = st.tabs(["🚀 Generate Videos", "📂 View Gallery Output", "ℹ️ Tool Help/Guide"])
 
@@ -345,11 +747,11 @@ with tabs[0]:
     col_input, col_action = st.columns([2, 1])
     
     with col_input:
-        st.markdown("<div class='widget-title'>📝 STEP 1: DEFINE TOPIC(S)</div>", unsafe_allow_html=True)
+        st.markdown("<div class='widget-title'>📝 STEP 1: DEFINE GENERATION PARAMETERS</div>", unsafe_allow_html=True)
         
         mode = st.radio(
             "Generation Mode",
-            options=["Single Video", "Batch Videos (Multiple)", "Automated News Scraping (Live RSS/Web)", "CSV/Excel Batch Upload", "Manual AI Script (Paste & Struct)", "Manual Script Input (Free & Custom)", "Run Fallback Demo (Baghdad Battery)"],
+            options=["Single Topic Generation", "Batch Topic Generation", "Live News & RSS Scraping", "CSV/Excel Batch Upload", "AI Script Formatter (Paste Raw Text)", "Fully Custom Script (Manual Override)", "System Benchmark (Fallback Demo)"],
             index=0
         )
         
@@ -359,12 +761,12 @@ with tabs[0]:
         raw_script_input = ""
         manual_script_data = None
         
-        if mode == "Single Video":
-            topic_input = st.text_input("Enter Video Topic", placeholder="e.g. Titanic Tragedy, Taj Mahal, Roman Empire")
-        elif mode == "Batch Videos (Multiple)":
+        if mode == "Single Topic Generation":
+            topic_input = st.text_input("Enter Video Topic", placeholder="e.g. Future of AI, Titanic, Top 5 Horror Stories, Quantum Physics")
+        elif mode == "Batch Topic Generation":
             batch_input = st.text_area(
                 "Enter Multiple Topics (Comma Separated)",
-                placeholder="e.g. Titanic, Taj Mahal, Giza Pyramids, Cleopatra",
+                placeholder="e.g. AI Revolution, Taj Mahal, Cyber Security, Elon Musk, Space Exploration",
                 height=150
             )
         elif mode == "CSV/Excel Batch Upload":
@@ -385,15 +787,11 @@ with tabs[0]:
                     st.session_state["uploaded_df"] = None
             else:
                 st.session_state["uploaded_df"] = None
-        elif mode == "Automated News Scraping (Live RSS/Web)":
+        elif mode == "Live News & RSS Scraping":
             st.markdown("### 📰 Automated News Scraping")
             news_url = st.text_input("Enter RSS Feed or Article Web Page URL", value="https://feeds.bbci.co.uk/urdu/rss.xml")
             
             # Setup session state for news articles
-            if "fetched_articles" not in st.session_state:
-                st.session_state["fetched_articles"] = []
-                st.session_state["feed_url_cache"] = ""
-                
             col_fetch, col_clear = st.columns([1, 1])
             with col_fetch:
                 if st.button("🔍 Fetch Articles", use_container_width=True):
@@ -420,77 +818,64 @@ with tabs[0]:
                 st.markdown(f"**Description:** *{options_dict[selected_title]['description']}*")
             else:
                 st.session_state["selected_article_data"] = None
-        elif mode == "Manual AI Script (Paste & Struct)":
+        elif mode == "AI Script Formatter (Paste Raw Text)":
             raw_script_input = st.text_area(
-                "Paste Your Raw Script (Urdu, English, or Roman Urdu)",
-                placeholder="Paste your raw script text here. The selected AI provider will automatically split it into 4 slides, format Urdu captions, match Pexels/Pixabay/Google queries, and build the video.",
+                "Paste Your Raw Script (Multi-Lingual Supported)",
+                placeholder="Paste your raw script text here. The selected AI provider will automatically split it into 4 slides, format captions, match queries, and build the video.",
                 height=250
             )
-        elif mode == "Manual Script Input (Free & Custom)":
-            st.markdown("### 📝 Enter Custom Script Details")
-            title = st.text_input("Video Title", value="Ancient Treasures")
-            year = st.text_input("Historical Era / Year", value="1000 CE")
-            music_vibe = st.selectbox("Soundtrack Vibe", options=["mystery", "epic", "sad", "ancient"], index=0)
+        elif mode == "Fully Custom Script (Manual Override)":
+            st.markdown("### 📝 Custom Script Configuration")
+            title = st.text_input("Video Title", value="Future of AI")
+            year = st.text_input("Context / Era / Year", value="Modern Day")
+            music_vibe = st.selectbox("Soundtrack Vibe", options=["mystery", "epic", "sad", "ancient", "modern", "intense"], index=0)
             
             st.markdown("#### Subtitles (Urdu Nastaliq - Bold words with **double asterisks**)")
-            cap1 = st.text_input("Slide 1 Caption", value="کِیا آپ جانتے ہیں کہ **قدیم خزانہ** کہاں ملا؟")
-            cap2 = st.text_input("Slide 2 Caption", value="صدیوں پرانی **پراسرار مٹی** کے نیچے چھپا تھا۔")
-            cap3 = st.text_input("Slide 3 Caption", value="ماہرین نے آخرکار اسے **کھوج نکالا**!")
-            cap4 = st.text_input("Slide 4 Caption", value="کمنٹس میں اپنی **رائے** کا اظہار کریں۔")
+            captions_text = st.text_area("Captions (One per line)", value="کِیا آپ جانتے ہیں کہ **AI** دنیا کیسے بدلے گی؟\nہر طرف **اسمارٹ روبوٹس** کا قبضہ ہوگا۔\nیہ ہماری **زندگیوں** کو آسان بنا دے گا!\nکمنٹس میں اپنی **رائے** کا اظہار کریں۔")
             
             st.markdown("#### Spoken Speech Narration (Urdu Speech Text)")
-            narr1 = st.text_input("Slide 1 Speech", value="کیا آپ جانتے ہیں کہ قدیم خزانہ کہاں ملا؟")
-            narr2 = st.text_input("Slide 2 Speech", value="صدیوں پرانی پراسرار مٹی کے نیچے چھپا تھا۔")
-            narr3 = st.text_input("Slide 3 Speech", value="ماہرین نے آخرکار اسے کھوج نکالا!")
-            narr4 = st.text_input("Slide 4 Speech", value="کمنٹس میں اپنی رائے کا اظہار کریں۔")
+            narrations_text = st.text_area("Narrations (One per line)", value="کیا آپ جانتے ہیں کہ آرٹیفیشل انٹیلیجنس دنیا کیسے بدلے گی؟\nہر طرف اسمارٹ روبوٹس کا قبضہ ہوگا۔\nیہ ہماری زندگیوں کو آسان بنا دے گا!\nکمنٹس میں اپنی رائے کا اظہار کریں۔")
             
-            st.markdown("#### Media Search Queries (8 queries, comma separated)")
+            st.markdown("#### Media Search Queries (comma separated)")
             queries_str = st.text_area(
                 "Image/Video Search Queries", 
-                value="ancient chest, gold coins, mysterious cave, digging dirt, archaeologists, treasure map, golden crown, glowing gold"
+                value="artificial intelligence, smart robot, futuristic city, cyber security, glowing circuit, neon lights, coding screen, digital brain"
             )
             
-            # Parse queries list
+            # Parse lists
+            captions_list = [c.strip() for c in captions_text.split("\n") if c.strip()]
+            narrations_list = [n.strip() for n in narrations_text.split("\n") if n.strip()]
             queries_list = [q.strip() for q in queries_str.split(",") if q.strip()]
-            while len(queries_list) < 8:
-                queries_list.append("treasure")
-            queries_list = queries_list[:8]
             
             # Assemble custom script dictionary structure
             manual_script_data = {
                 "title": title.strip(),
                 "year": year.strip(),
                 "bg_music_vibe": music_vibe,
-                "caption_text_1": cap1.strip(),
-                "caption_text_2": cap2.strip(),
-                "caption_text_3": cap3.strip(),
-                "caption_text_4": cap4.strip(),
-                "narration_text_1": narr1.strip(),
-                "narration_text_2": narr2.strip(),
-                "narration_text_3": narr3.strip(),
-                "narration_text_4": narr4.strip(),
+                "captions": captions_list,
+                "narrations": narrations_list,
                 "queries": queries_list,
-                "seo_title": f"{title.strip()} — Secrets of the Past 🏺✨",
-                "seo_description": f"{title.strip()} ({year.strip()}) custom script generated manually.\n\nUrdu Script:\n{cap1} {cap2}\n{cap3} {cap4}",
-                "seo_hashtags": "#History #CustomStory #UrduNarratives #AncientTech",
-                "seo_short_caption": f"Secrets of {title.strip()} revealed! #History #Urdu"
+                "seo_title": f"{title.strip()} — Mind Blowing Facts 🧠✨",
+                "seo_description": f"{title.strip()} ({year.strip()}) custom script generated manually.",
+                "seo_hashtags": "#Viral #Trending #Facts #UrduNarratives",
+                "seo_short_caption": f"Mind blowing facts about {title.strip()}! #Viral #Urdu"
             }
             
     with col_action:
-        st.markdown("<div class='widget-title'>🎬 STEP 2: BUILD IT</div>", unsafe_allow_html=True)
-        st.write("Click below to start generating the video asset pipeline. This will query the AI model, download matched stock clips, mix voice/music, and compile the final reel.")
+        st.markdown("<div class='widget-title'>🎬 STEP 2: COMPILE PIPELINE</div>", unsafe_allow_html=True)
+        st.write("Click below to initialize the video generation engine. This will query the AI model, fetch relevant media assets, synthesize audio, and compile the final reel.")
         
-        start_btn = st.button("🚀 Start Video Pipeline", use_container_width=True)
+        start_btn = st.button("🚀 Generate Video", use_container_width=True)
 
     # Output Console & Log Blocks
     if start_btn:
         topics_list = []
-        if mode == "Single Video":
+        if mode == "Single Topic Generation":
             if not topic_input.strip():
                 st.error("Error: Please provide a video topic.")
             else:
                 topics_list = [topic_input.strip()]
-        elif mode == "Batch Videos (Multiple)":
+        elif mode == "Batch Topic Generation":
             if not batch_input.strip():
                 st.error("Error: Please provide topics.")
             else:
@@ -515,18 +900,20 @@ with tabs[0]:
                             queries_list.append("history")
                         queries_list = queries_list[:8]
                         
+                        captions_list = []
+                        narrations_list = []
+                        for i in range(1, 21):
+                            cap_val = str(row_dict.get(f"caption_text_{i}", "")).strip()
+                            narr_val = str(row_dict.get(f"narration_text_{i}", "")).strip()
+                            if cap_val: captions_list.append(cap_val)
+                            if narr_val: narrations_list.append(narr_val)
+                        
                         script_data = {
                             "title": str(row_dict.get("title", "")).strip(),
                             "year": str(row_dict.get("year", "Unknown")).strip(),
                             "bg_music_vibe": str(row_dict.get("bg_music_vibe", "mystery")).strip(),
-                            "caption_text_1": str(row_dict.get("caption_text_1", "")).strip(),
-                            "caption_text_2": str(row_dict.get("caption_text_2", "")).strip(),
-                            "caption_text_3": str(row_dict.get("caption_text_3", "")).strip(),
-                            "caption_text_4": str(row_dict.get("caption_text_4", "")).strip(),
-                            "narration_text_1": str(row_dict.get("narration_text_1", "")).strip(),
-                            "narration_text_2": str(row_dict.get("narration_text_2", "")).strip(),
-                            "narration_text_3": str(row_dict.get("narration_text_3", "")).strip(),
-                            "narration_text_4": str(row_dict.get("narration_text_4", "")).strip(),
+                            "captions": captions_list,
+                            "narrations": narrations_list,
                             "queries": queries_list,
                             "seo_title": str(row_dict.get("seo_title", f"{row_dict.get('title', '')} — Secrets of the Past 🏺✨")).strip(),
                             "seo_description": str(row_dict.get("seo_description", "")).strip(),
@@ -542,10 +929,14 @@ with tabs[0]:
                                 break
                         if not topic_col:
                             topic_col = df.columns[0].lower()
-                        topic_val = str(row_dict[topic_col]).strip()
-                        if topic_val and not pd.isna(row_dict[topic_col]):
-                            topics_list.append({"type": "topic", "data": topic_val, "title": topic_val})
-        elif mode == "Automated News Scraping (Live RSS/Web)":
+                        raw_val = row_dict[topic_col]
+                        if pd.isna(raw_val):
+                            continue
+                        topic_val = str(raw_val).strip()
+                        if not topic_val or topic_val.lower() == "nan":
+                            continue
+                        topics_list.append({"type": "topic", "data": topic_val, "title": topic_val})
+        elif mode == "Live News & RSS Scraping":
             if st.session_state.get("selected_article_data"):
                 art = st.session_state["selected_article_data"]
                 topics_list = [{"type": "rss", "link": art["link"], "desc": art["description"], "title": art["title"]}]
@@ -554,35 +945,50 @@ with tabs[0]:
                     st.error("Error: Please provide a news RSS feed or web page URL.")
                 else:
                     topics_list = [{"type": "direct", "link": news_url.strip(), "desc": "", "title": "Scraped Article"}]
-        elif mode == "Manual AI Script (Paste & Struct)":
+        elif mode == "AI Script Formatter (Paste Raw Text)":
             if not raw_script_input.strip():
                 st.error("Error: Please paste your raw script.")
             else:
                 topics_list = [raw_script_input.strip()]
-        elif mode == "Manual Script Input (Free & Custom)":
+        elif mode == "Fully Custom Script (Manual Override)":
+            if not manual_script_data:
+                st.error("Please fill in all manual script fields before starting.")
+                st.stop()
             topics_list = [manual_script_data["title"]]
         else:
             topics_list = [None] # Fallback mode triggers with None topic
 
         if topics_list:
-            st.markdown("### 🖥️ Compilation Progress Console")
-            console_placeholder = st.empty()
+            st.markdown("### 🖥️ Live Render Engine Console")
             
-            # Setup logs placeholder
-            with redirect_stdout_to_streamlit(console_placeholder):
-                for idx, t in enumerate(topics_list, 1):
+            for idx, t in enumerate(topics_list, 1):
+                # Setup Modern Progress UI per video
+                st.markdown(f"#### 🎬 Processing Video {idx} of {len(topics_list)}")
+                status_container = st.container()
+                with status_container:
+                    status_text = st.empty()
+                    progress_bar = st.progress(0)
+                    status_text.markdown("**⏳ Initializing Video Engine... (0%)**")
+                    
+                console_placeholder = st.empty()
+                
+                # Setup logs placeholder with injected progress states
+                with redirect_stdout_to_streamlit(console_placeholder, progress_bar, status_text):
                     # Set custom vibe if selected (non-random)
                     if vibe_selection != "random":
                         config.BG_MUSIC_VIBE = vibe_selection
+                    else:
+                        import random
+                        config.BG_MUSIC_VIBE = random.choice(["mystery", "epic", "sad", "ancient", "modern", "intense"])
                         
                     t_name = t
                     if isinstance(t, dict):
                         t_name = t.get("title", "Scraped Article")
                         
                     if t:
-                        if mode == "Manual AI Script (Paste & Struct)":
+                        if mode == "AI Script Formatter (Paste Raw Text)":
                             print(f"\n[UI Run {idx}/{len(topics_list)}] Structuring Raw Script Input...")
-                        elif mode == "Automated News Scraping (Live RSS/Web)":
+                        elif mode == "Live News & RSS Scraping":
                             print(f"\n[UI Run {idx}/{len(topics_list)}] Scraping and Structuring from '{t_name}'...")
                         elif mode == "CSV/Excel Batch Upload":
                             print(f"\n[UI Run {idx}/{len(topics_list)}] Processing uploaded batch row '{t_name}'...")
@@ -591,36 +997,39 @@ with tabs[0]:
                     else:
                         print(f"\n[UI Run] Initiating Fallback Mode...")
                         
-                    if mode == "Manual Script Input (Free & Custom)":
-                        success = generate_video_for_topic(None, provider=provider, manual_script_data=manual_script_data)
-                    elif mode == "Manual AI Script (Paste & Struct)":
-                        success = generate_video_for_topic(t, provider=provider, is_raw_script=True)
-                    elif mode == "Automated News Scraping (Live RSS/Web)":
-                        from history_reels.news_scraper import scrape_article_text
-                        print(f"Scraping clean text content from URL: {t['link']}...")
-                        scraped_text = scrape_article_text(t["link"]) or t["desc"] or t["title"]
-                        if not scraped_text or not scraped_text.strip():
-                            print("Error: Failed to extract text from URL.")
-                            success = False
+                    config.reset_per_run_state()
+                    try:
+                        if mode == "Fully Custom Script (Manual Override)":
+                            success = generate_video_for_topic(None, provider=provider, manual_script_data=manual_script_data)
+                        elif mode == "AI Script Formatter (Paste Raw Text)":
+                            success = generate_video_for_topic(t, provider=provider, is_raw_script=True)
+                        elif mode == "Live News & RSS Scraping":
+                            from history_reels.news_scraper import scrape_article_text
+                            print(f"Scraping clean text content from URL: {t['link']}...")
+                            scraped_text = scrape_article_text(t["link"]) or t["desc"] or t["title"]
+                            if not scraped_text or not scraped_text.strip():
+                                print("Error: Failed to extract text from URL.")
+                                success = False
+                            else:
+                                print(f"Scraped content successfully (Length: {len(scraped_text)} characters).")
+                                success = generate_video_for_topic(scraped_text, provider=provider, is_raw_script=True)
+                        elif mode == "CSV/Excel Batch Upload":
+                            if t["type"] == "manual_script":
+                                success = generate_video_for_topic(None, provider=provider, manual_script_data=t["data"])
+                            else:
+                                success = generate_video_for_topic(t["data"], provider=provider)
                         else:
-                            print(f"Scraped content successfully (Length: {len(scraped_text)} characters).")
-                            success = generate_video_for_topic(scraped_text, provider=provider, is_raw_script=True)
-                    elif mode == "CSV/Excel Batch Upload":
-                        if t["type"] == "manual_script":
-                            success = generate_video_for_topic(None, provider=provider, manual_script_data=t["data"])
-                        else:
-                            success = generate_video_for_topic(t["data"], provider=provider)
-                    else:
-                        success = generate_video_for_topic(t, provider=provider)
+                            success = generate_video_for_topic(t, provider=provider)
+                    except Exception as e:
+                        st.error(f"Error generating video for topic: {e}")
+                        success = False
                     
                     if success:
                         st.balloons()
                         st.success(f"Successfully generated Video for Topic: '{t_name or 'Baghdad Battery'}'!")
                         
                         # Find and display the generated video + SEO package in UI
-                        clean_title = "".join(c for c in config.TOPIC_TITLE if c.isalnum() or c in (' ', '_', '-')).strip()
-                        clean_year = "".join(c for c in config.TOPIC_YEAR if c.isalnum() or c in (' ', '_', '-')).strip()
-                        output_name = f"{clean_title} {clean_year} Asad Voice"
+                        output_name = config.OUTPUT_NAME
                         
                         video_path = os.path.join(config.OUTPUT_DIR, f"{output_name}.mp4")
                         txt_path = os.path.join(config.OUTPUT_DIR, f"{output_name}.txt")
@@ -640,7 +1049,8 @@ with tabs[0]:
                             else:
                                 st.warning("SEO Package text file not resolved.")
                     else:
-                        st.error(f"Failed compilation for Topic: '{t or 'Baghdad Battery'}'")
+                        err_msg = getattr(config, "LAST_ERROR_MESSAGE", "Unknown build error.")
+                        st.error(f"❌ Failed compilation for Topic: '{t_name or 'Baghdad Battery'}'\n\n**Reason:** {err_msg}")
 
 # Tab 2: Gallery Output View
 with tabs[1]:

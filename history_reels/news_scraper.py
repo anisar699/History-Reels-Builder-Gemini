@@ -1,27 +1,19 @@
+import html
 import re
 import xml.etree.ElementTree as ET
 import requests
 
 def clean_html(html_text):
     # Remove script and style elements
-    html_text = re.sub(r'<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>', '', html_text, flags=re.IGNORECASE)
-    html_text = re.sub(r'<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>', '', html_text, flags=re.IGNORECASE)
+    html_text = re.sub(r'<(script|style).*?>.*?</\1>', '', html_text, flags=re.DOTALL|re.IGNORECASE)
     # Extract text from p tags
     paragraphs = re.findall(r'<p\b[^>]*>(.*?)</p>', html_text, flags=re.IGNORECASE | re.DOTALL)
     cleaned_paragraphs = []
     for p in paragraphs:
         # Strip all inner html tags
-        p_clean = re.sub(r'<[^>]+>', '', p)
+        p_clean = re.sub(r'<[^>]+>', ' ', p)
         # Decode common HTML entities
-        p_clean = (p_clean.replace("&nbsp;", " ")
-                           .replace("&amp;", "&")
-                           .replace("&quot;", '"')
-                           .replace("&apos;", "'")
-                           .replace("&#39;", "'")
-                           .replace("&lt;", "<")
-                           .replace("&gt;", ">")
-                           .replace("\r", "")
-                           .replace("\n", " "))
+        p_clean = html.unescape(p_clean)
         p_clean = re.sub(r'\s+', ' ', p_clean).strip()
         if len(p_clean) > 20:  # ignore very short snippets/headers
             cleaned_paragraphs.append(p_clean)
@@ -33,7 +25,8 @@ def clean_html(html_text):
         if len(plain) > 100:
             return plain[:2000] # Limit size
             
-    return "\n\n".join(cleaned_paragraphs[:15]) # limit to first 15 paragraphs for token safety
+    result = "\n\n".join(cleaned_paragraphs[:15]) # limit to first 15 paragraphs for token safety
+    return result if result else None
 
 def fetch_rss_feed(rss_url):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -84,6 +77,7 @@ def scrape_article_text(url):
     try:
         r = requests.get(url, headers=headers, timeout=15)
         r.raise_for_status()
+        r.encoding = r.apparent_encoding
         return clean_html(r.text)
     except Exception as e:
         print(f"Error scraping article URL: {e}")
