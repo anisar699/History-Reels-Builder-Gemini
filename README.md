@@ -39,51 +39,33 @@ Now upgraded to a **Fully Dynamic System** supporting videos up to 10 minutes lo
 
 ---
 
-## Setup & Installation 🛠️ (Beginner Friendly Guide)
+## Setup & Installation 🛠️ (1-Click Auto Installer)
 
-Follow these steps exactly to download this project from GitHub and run it on any Windows PC.
+We have created an automatic setup script for beginners! You do not need to type long commands or create folders manually.
 
-### Step 1: Download & Install Prerequisites
-1. **Download Python:** Go to [python.org/downloads](https://www.python.org/downloads/) and download the latest Python installer.
-   * ⚠️ **CRITICAL:** When running the Python installer, you MUST check the box that says **"Add Python to PATH"** at the very bottom before clicking Install.
-2. **Download Git:** Go to [git-scm.com/downloads](https://git-scm.com/downloads) and install Git for Windows. Just keep clicking "Next" to use all default settings.
-3. **Install FFmpeg (Video Engine):** Open **PowerShell** as Administrator and type the following command, then press Enter:
-   ```powershell
-   winget install Gyan.FFmpeg
-   ```
-   *Note: Close and reopen PowerShell after this finishes.*
+### Step 1: Download Python & Git
+1. **Download Python:** Go to [python.org](https://www.python.org/downloads/) and install it. 
+   ⚠️ **CRITICAL:** Check the box **"Add Python to PATH"** at the bottom before clicking Install!
+2. **Download Git:** Go to [git-scm.com](https://git-scm.com/downloads) and install Git for Windows (just keep clicking Next).
 
-### Step 2: Clone the Repository (Download Code)
-Now, you will download the code from GitHub to your PC.
-1. Open a normal **PowerShell** or **Command Prompt** window.
-2. Type the following command and press Enter:
-   ```powershell
-   git clone https://github.com/anisar699/History-Reels-Builder-Gemini.git
-   ```
-3. Once the download is 100% complete, move into the newly created project folder by typing:
-   ```powershell
-   cd History-Reels-Builder-Gemini
-   ```
-
-### Step 3: Install Required Packages
-While inside the project folder in PowerShell, run this command to automatically download all the required AI and Video Python libraries:
+### Step 2: Download the Project
+Open a normal **PowerShell** window and type:
 ```powershell
-pip install -r requirements.txt
+git clone https://github.com/anisar699/History-Reels-Builder-Gemini.git
+cd History-Reels-Builder-Gemini
 ```
 
-### Step 4: Create Asset Folders
-Before running the dashboard, the system needs a few folders to store music and fonts.
-1. Open your PC's File Explorer and go to your default **Pictures** folder.
-2. Create a new folder named exactly **`history videos`**.
-3. Inside `history videos`, create two more folders: **`bg_music`** and **`fonts`**.
-   * *Tip:* Place some looping MP3 files in `bg_music` (e.g., `mystery.mp3`) and your Urdu `.ttf` font file in the `fonts` folder.
-
-### Step 5: Launch the Dashboard! 🚀
-You are all set! In your PowerShell window (make sure you are still inside the `History-Reels-Builder-Gemini` folder), type:
+### Step 3: Run the Auto-Installer 🚀
+While inside the `History-Reels-Builder-Gemini` folder, simply type:
 ```powershell
-streamlit run app.py
+python install.py
 ```
-This will automatically open the beautiful visual dashboard in your default web browser!
+**That's it! The script will automatically:**
+* Check and install FFmpeg (Video Engine) for you.
+* Download and install all required AI Python libraries.
+* Create the `history videos/bg_music` and `fonts` asset folders.
+* Create a **"Start Reels Builder"** shortcut right on your Desktop!
+* Launch the Dashboard automatically in your web browser!
 
 ---
 
