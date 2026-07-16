@@ -94,12 +94,15 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
         duration_instruction = "IMPORTANT: Generate exactly as many captions, narrations, and queries as needed."
 
     if is_raw_script:
+        approx_slides = max(4, len(topic.split()) // 12)
         system_prompt = (
             "You are an expert short-form viral video producer. Your task is to take the provided raw narrative script (which can be in Urdu, English, or Roman Urdu) "
             "and format/split it into logical slides matching the required JSON format. Ensure captions are in Nastaliq-friendly Urdu. "
-            f"{duration_instruction} The output must strictly follow this JSON schema:\n{schema_details}"
+            "CRITICAL STRICT SAFETY: The 'queries' you generate MUST be 100% strictly safe for work, historical, and family-friendly. NEVER generate any adult, NSFW, violent, or suggestive queries! "
+            f"CRITICAL LENGTH RULE: You MUST divide the ENTIRE provided script into exactly {approx_slides} logical slides. Do NOT summarize or skip any part of it. Every single word of the script must be present in the narrations. "
+            f"The output must strictly follow this JSON schema:\n{schema_details}"
         )
-        user_prompt = f"Structure this raw script text into the JSON format:\n{topic}"
+        user_prompt = f"Structure this ENTIRE raw script text into exactly {approx_slides} slides in JSON format without dropping a single sentence. Generate highly accurate, family-friendly English visual search queries for each slide. The text is:\n{topic}"
     else:
         system_prompt = (
             "You are an expert short-form viral video producer and scriptwriter. Generate a highly engaging script configuration for Urdu short reels on ANY given topic (e.g. Tech, Facts, Horror, Motivation, History, etc.) in JSON format. "

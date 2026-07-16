@@ -45,7 +45,8 @@ def download_file_with_retry(url, path, max_attempts=2):
 
 def search_google_images(query):
     # Queries Bing images behind the scenes as a high-quality, keyless proxy for Google images
-    url = f"https://www.bing.com/images/search?q={requests.utils.quote(query)}&first=1"
+    # CRITICAL: Added adlt=strict to ensure strictly safe family-friendly results
+    url = f"https://www.bing.com/images/search?q={requests.utils.quote(query)}&first=1&adlt=strict"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     try:
         r = requests.get(url, headers=headers, timeout=15)
@@ -176,7 +177,7 @@ def download_clip_for_query(query, index):
 
         elif provider == "pixabay":
             print(f"Searching Pixabay for '{query}'...")
-            url = f"https://pixabay.com/api/videos/?key={config.PIXABAY_API_KEY}&q={requests.utils.quote(query)}&per_page=15"
+            url = f"https://pixabay.com/api/videos/?key={config.PIXABAY_API_KEY}&q={requests.utils.quote(query)}&per_page=15&safesearch=true"
             try:
                 r = requests.get(url, timeout=15)
                 if r.status_code == 200:
