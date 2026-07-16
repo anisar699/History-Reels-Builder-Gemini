@@ -599,6 +599,14 @@ with st.sidebar:
 
     with st.expander("🏷️ Branding & Overlays", expanded=False):
         # Font Settings
+        urdu_font_choice = st.selectbox(
+            "Caption Font (Urdu)",
+            options=["Jameel Noori Nastaleeq", "Noto Nastaliq Urdu"],
+            index=0,
+            help="Select the Urdu font for video captions."
+        )
+        config.URDU_FONT_NAME = urdu_font_choice
+        
         custom_font = st.file_uploader("Upload Custom Urdu/English Font (.ttf)", type=["ttf", "otf"])
         if custom_font:
             os.makedirs(os.path.join(config.OUTPUT_DIR, "fonts"), exist_ok=True)

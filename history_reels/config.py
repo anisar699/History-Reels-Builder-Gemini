@@ -31,7 +31,9 @@ HOME = os.path.expanduser("~")
 TEMP_DIR = os.path.join(HOME, "Downloads", "history_reels_tmp")
 TOPIC_TEMP_DIR = TEMP_DIR
 OUTPUT_DIR = os.path.join(HOME, "Pictures", "history videos")
-FONT_PATH = os.path.join(OUTPUT_DIR, "fonts", "NotoNastaliqUrdu-Bold.ttf")
+ASSETS_DIR = os.path.join(os.getcwd(), "assets")
+URDU_FONT_NAME = "Jameel Noori Nastaleeq"
+FONT_PATH = os.path.join(ASSETS_DIR, f"{URDU_FONT_NAME}.ttf")
 MUSIC_DIR = os.path.join(OUTPUT_DIR, "bg_music")
 
 # Global Generation Variables

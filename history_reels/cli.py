@@ -32,15 +32,21 @@ def ensure_assets():
     os.makedirs(config.MUSIC_DIR, exist_ok=True)
     
     # 1. Ensure Urdu Font exists
+    font_name = getattr(config, "URDU_FONT_NAME", "Jameel Noori Nastaleeq")
+    config.FONT_PATH = os.path.join(config.ASSETS_DIR, f"{font_name}.ttf")
+    
     if not os.path.exists(config.FONT_PATH):
-        print(f"Urdu Font not found at {config.FONT_PATH}. Auto-downloading...")
-        font_url = "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoNastaliqUrdu/NotoNastaliqUrdu-Bold.ttf"
+        print(f"Urdu Font '{font_name}' not found at {config.FONT_PATH}. Auto-downloading...")
+        font_urls = {
+            "Noto Nastaliq Urdu": "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoNastaliqUrdu/NotoNastaliqUrdu-Bold.ttf",
+            "Jameel Noori Nastaleeq": "https://raw.githubusercontent.com/abid-mujtaba/ttf-jameel-noori-nastaleeq/master/Jameel%20Noori%20Nastaleeq.ttf"
+        }
+        font_url = font_urls.get(font_name, font_urls["Jameel Noori Nastaleeq"])
         try:
             download_file(font_url, config.FONT_PATH)
-            print("Successfully downloaded Urdu Nastaliq Font!")
+            print(f"Successfully downloaded {font_name} Font!")
         except Exception as e:
             print(f"Failed to download Urdu font: {e}")
-            
     # 2. Ensure Background Music pool exists
     track_name = f"{config.BG_MUSIC_VIBE}_{config.BG_MUSIC_TRACK_INDEX}"
     target_music_path = os.path.join(config.MUSIC_DIR, f"{track_name}.mp3")
