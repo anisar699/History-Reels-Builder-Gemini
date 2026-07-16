@@ -58,15 +58,18 @@ def ensure_assets():
                 print(f"Successfully downloaded background music: {track_name}.mp3")
             except Exception as e:
                 print(f"Failed to download music track: {e}")
-                print(f"Generating silent fallback music for {track_name} to prevent crashes...")
-                try:
-                    import subprocess
-                    subprocess.run([
-                        "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-                        "-t", "60", "-q:a", "9", "-acodec", "libmp3lame", target_music_path
-                    ], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except Exception as ex:
-                    print(f"Failed to generate silent fallback: {ex}")
+        
+        # If download failed or no URL was available for this vibe, generate silent fallback
+        if not os.path.exists(target_music_path):
+            print(f"Generating silent fallback music for {track_name} to prevent crashes...")
+            try:
+                import subprocess
+                subprocess.run([
+                    "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+                    "-t", "60", "-q:a", "9", "-acodec", "libmp3lame", target_music_path
+                ], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as ex:
+                print(f"Failed to generate silent fallback: {ex}")
 
 def check_inputs():
     os.makedirs(config.TOPIC_TEMP_DIR, exist_ok=True)
