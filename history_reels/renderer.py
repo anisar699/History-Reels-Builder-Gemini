@@ -295,7 +295,8 @@ def run_ffmpeg(voice_dur):
         v_filters.append(f"drawtext=text='{safe_text}':fontsize=22:fontcolor=white@0.6{font_arg}:x=(w-tw)/2:y=h-70")
         
     ass_path_clean = os.path.join(config.TOPIC_TEMP_DIR, "subtitles.ass").replace("\\", "/").replace(":", "\\:")
-    v_filters.append(f"subtitles='{ass_path_clean}'")
+    font_dir_clean = os.path.dirname(os.path.abspath(config.FONT_PATH)).replace("\\", "/").replace(":", "\\:")
+    v_filters.append(f"subtitles='{ass_path_clean}':fontsdir='{font_dir_clean}'")
     
     base_v_filter = ",".join(v_filters)
     filter_parts.append(f"[0:v]{base_v_filter}[v_graded]")
