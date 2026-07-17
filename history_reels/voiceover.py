@@ -69,6 +69,7 @@ def generate_voiceover(job: GenerationJob):
                     "similarity_boost": 0.75
                 }
             }
+
             import requests
             try:
                 response = requests.post(url, headers=headers, json=payload, timeout=45)
@@ -85,7 +86,7 @@ def generate_voiceover(job: GenerationJob):
             with open(temp_txt_path, "w", encoding="utf-8") as f:
                 f.write(text)
             cmd_tts = [
-                "edge-tts", "--file", temp_txt_path, "--voice", job.VOICE_ID,
+                "edge-tts", "--file", temp_txt_path, "--voice", getattr(job, "VOICE_ID", "default_voice"),
                 "--write-media", seg_path
             ]
             voice_pitch = getattr(job, "VOICE_PITCH", "default")
@@ -125,12 +126,9 @@ def generate_voiceover(job: GenerationJob):
         job.SLIDE_TIMINGS.append(timing)
     
     # Concatenate audio segments using FFmpeg
+    if not voice_segments:
+        return 0.0
     voice_mp3 = os.path.join(job.TOPIC_TEMP_DIR, "voice.mp3")
-    n = len(voice_segments)
-    inputs_str = "".join([f"[{i}:a]" for i in range(n)])
-    cmd_concat = ["ffmpeg", "-y"]
-    for seg in voice_segments:
-        cmd_concat.extend(["-i", seg])
     cmd_concat.extend(["-filter_complex", f"{inputs_str}concat=n={n}:v=0:a=1[out]", "-map", "[out]", voice_mp3])
     subprocess.run(cmd_concat, check=True, stdin=subprocess.DEVNULL)
     

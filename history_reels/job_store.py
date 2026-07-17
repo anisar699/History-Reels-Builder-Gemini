@@ -39,7 +39,8 @@ def _is_persistable_setting(name: str, value: Any) -> bool:
         return False
     try:
         json.dumps(value, ensure_ascii=False)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as e:
+        print(f"Serialization failed for {name}: {e}")
         return False
     return True
 
@@ -139,7 +140,10 @@ class JobStore:
             )
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
             if "retry_of" not in columns:
-                connection.execute("ALTER TABLE jobs ADD COLUMN retry_of TEXT NOT NULL DEFAULT ''")
+                try:
+                    connection.execute("ALTER TABLE jobs ADD COLUMN retry_of TEXT NOT NULL DEFAULT ''")
+                except sqlite3.OperationalError:
+                    pass
             for column, definition in {
                 "attempt": "INTEGER NOT NULL DEFAULT 1",
                 "max_attempts": "INTEGER NOT NULL DEFAULT 1",
@@ -148,7 +152,10 @@ class JobStore:
                 "error_category": "TEXT NOT NULL DEFAULT ''",
             }.items():
                 if column not in columns:
-                    connection.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
+                    try:
+                        connection.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
+                    except sqlite3.OperationalError:
+                        pass
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS job_events (
@@ -198,12 +205,17 @@ class JobStore:
     def mark_succeeded(self, job: Any) -> None:
         output_name = getattr(job, "OUTPUT_NAME", "")
         output_dir = getattr(job, "OUTPUT_DIR", "")
+        
+        # Use job's path properties if available to respect CUSTOM_SAVE_DIR
+        video_path = getattr(job, "video_path", os.path.join(output_dir, f"{output_name}.mp4") if output_name else "")
+        seo_path = getattr(job, "seo_path", os.path.join(output_dir, f"{output_name}.txt") if output_name else "")
+
         self._update(
             job.job_id,
             "succeeded",
             output_name=output_name,
-            output_video_path=os.path.join(output_dir, f"{output_name}.mp4") if output_name else "",
-            output_seo_path=os.path.join(output_dir, f"{output_name}.txt") if output_name else "",
+            output_video_path=video_path,
+            output_seo_path=seo_path,
             current_stage="completed",
             progress=100,
         )
@@ -334,9 +346,11 @@ class JobStore:
                 if datetime.fromisoformat(row["created_at"]).timestamp() < cutoff
             ]
             if ids:
-                placeholders = ",".join("?" for _ in ids)
-                connection.execute(f"DELETE FROM job_events WHERE job_id IN ({placeholders})", ids)
-                connection.execute(f"DELETE FROM jobs WHERE job_id IN ({placeholders})", ids)
+                for i in range(0, len(ids), 500):
+                    chunk_ids = ids[i:i + 500]
+                    placeholders = ",".join("?" for _ in chunk_ids)
+                    connection.execute(f"DELETE FROM job_events WHERE job_id IN ({placeholders})", chunk_ids)
+                    connection.execute(f"DELETE FROM jobs WHERE job_id IN ({placeholders})", chunk_ids)
         return len(ids)
 
     def list_jobs(self, limit: int = 20) -> list[dict[str, Any]]:

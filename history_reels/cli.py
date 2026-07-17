@@ -16,6 +16,7 @@ from history_reels.music_library import ensure_local_music_track
 from history_reels.jobs import GenerationJob, create_generation_job
 from history_reels.job_store import JobCancelledError, JobStore
 from history_reels.script_generator import fetch_ai_script
+from history_reels.script_generator import fetch_ai_script
 from history_reels.stock_media import download_clip_for_query
 from history_reels.voiceover import generate_voiceover
 from history_reels.renderer import build_video_frames, run_ffmpeg
@@ -23,13 +24,18 @@ from history_reels.seo import write_seo_package
 from history_reels.verification import verify_deliverable
 
 def download_file(url, path):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(url, headers=headers, stream=True, timeout=30)
-    r.raise_for_status()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        for chunk in r.iter_content(chunk_size=8192):
-            f.write(chunk)
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, stream=True, timeout=30)
+        r.raise_for_status()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        part_path = path + ".part"
+        with open(part_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+        os.rename(part_path, path)
+    except Exception as e:
+        print(f"Network error downloading {url}: {e}")
 
 def ensure_assets(job: GenerationJob):
     # Make sure target directories exist
@@ -49,17 +55,17 @@ def check_inputs(job: GenerationJob):
     captions = list(getattr(job, "CAPTIONS", []) or [])
     narrations = list(getattr(job, "NARRATIONS", []) or [])
     if not captions:
-        captions = [getattr(job, f"CAPTION_TEXT_{index}", "") for index in range(1, 5)]
+        captions = [getattr(job, f"CAPTION_TEXT_{index}", "") for index in range(1, 21)]
     if not narrations:
-        narrations = [getattr(job, f"NARRATION_TEXT_{index}", "") for index in range(1, 5)]
+        narrations = [getattr(job, f"NARRATION_TEXT_{index}", "") for index in range(1, 21)]
+    if len(captions) != len(narrations):
+        print("Error: Captions and narrations must contain the same number of slides.")
+        return False
     captions = [str(value).strip() for value in captions if str(value).strip()]
     narrations = [str(value).strip() for value in narrations if str(value).strip()]
     queries = [str(value).strip() for value in (getattr(job, "QUERIES", []) or []) if str(value).strip()]
     if not captions or not narrations or not queries:
         print("Error: At least one caption, narration, and media query is required.")
-        return False
-    if len(captions) != len(narrations):
-        print("Error: Captions and narrations must contain the same number of slides.")
         return False
     job.CAPTIONS = captions
     job.NARRATIONS = narrations
@@ -87,6 +93,8 @@ def download_visuals(job: GenerationJob, voice_dur):
     
     expanded_queries = []
     while len(expanded_queries) < required_clips:
+        if not job.QUERIES:
+            break
         expanded_queries.extend(job.QUERIES)
     job.QUERIES = expanded_queries[:required_clips]
     
@@ -114,7 +122,9 @@ def copy_deliverables(job: GenerationJob):
     final_video = job.video_path
     final_txt = job.seo_path
     
-    print(f"Copying final files to {job.OUTPUT_DIR}...")
+    target_dir = os.path.dirname(final_video)
+    os.makedirs(target_dir, exist_ok=True)
+    print(f"Copying final files to {target_dir}...")
     
     src_video = os.path.join(job.TOPIC_TEMP_DIR, "output.mp4")
     src_txt = os.path.join(job.TOPIC_TEMP_DIR, "output.txt")
@@ -159,7 +169,7 @@ def copy_deliverables(job: GenerationJob):
         list_txt = os.path.join(job.TOPIC_TEMP_DIR, "concat_list.txt")
         with open(list_txt, "w") as f:
             for item in concat_list:
-                item_clean = item.replace("\\", "/")
+                item_clean = item.replace("\\", "/").replace("'", "'\\''")
                 f.write(f"file '{item_clean}'\n")
                 
         stitched_video = os.path.join(job.TOPIC_TEMP_DIR, "stitched_output.mp4")
@@ -389,7 +399,11 @@ def main():
     provider = args.provider
     
     if args.csv:
-        import pandas as pd
+        try:
+            import pandas as pd
+        except ImportError:
+            print("Error: pandas is required for CSV processing.")
+            sys.exit(1)
         csv_path = args.csv
         if not os.path.exists(csv_path):
             print(f"Error: Batch file '{csv_path}' not found.")
@@ -442,6 +456,8 @@ def main():
                         topic_col = c.lower()
                         break
                 if not topic_col:
+                    if df.empty:
+                        continue
                     topic_col = df.columns[0].lower()
                 
                 topic_val = safe_str(row_dict.get(topic_col))
@@ -475,6 +491,9 @@ def main():
         except ValueError as e:
             print(f"News scraping error: {e}")
             return
+        except Exception as e:
+            print(f"Unexpected scraping error: {e}")
+            return
     elif args.topic:
         # Command-line single topic
         generate_video_for_topic(args.topic, provider=provider)
@@ -494,7 +513,6 @@ def main():
         # Interactive mode
         print("="*60)
         print("         WELCOME TO AI REELS STUDIO")
-        print("="*60)
         print("Select Generation Mode:")
         print("1. Single Video Generation")
         print("2. Batch Video Generation (Multiple Topics)")

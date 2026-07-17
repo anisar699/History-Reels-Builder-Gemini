@@ -2,6 +2,7 @@ import os
 import glob
 import hashlib
 import random
+import uuid
 from datetime import datetime
 import streamlit as st
 
@@ -14,6 +15,7 @@ from history_reels.input_validation import validate_external_url, validate_uploa
 from history_reels.security import require_dashboard_auth, save_local_env_values
 from history_reels.voiceover import filter_voices_for_language
 
+config.check_system_dependencies()
 
 WORKFLOW_STAGES = [
     ("queued", "Queued"),
@@ -61,8 +63,12 @@ def _status_badge(status: str) -> str:
 @st.fragment(run_every=2)
 def render_live_generation_status(output_dir: str) -> None:
     """Show durable render progress and its live event terminal on the Generate tab."""
-    job_store = JobStore(output_dir)
-    recent_jobs = job_store.list_jobs(limit=25)
+    try:
+        job_store = JobStore(output_dir)
+        recent_jobs = job_store.list_jobs(limit=25)
+    except OSError:
+        st.warning("Job history could not be read.")
+        return
     live_jobs = [
         record for record in recent_jobs
         if record.get("status") in {"queued", "running"}
@@ -155,19 +161,22 @@ def render_completed_deliverables(records: list[dict], *, key_prefix: str, headi
 
         with st.container(border=True):
             st.markdown(f"<div class='gallery-card-title'>✅ {title}</div>", unsafe_allow_html=True)
-            st.caption(f"Render complete · {created} · {_format_file_size(os.path.getsize(video_path))}")
+            try:
+                file_size = os.path.getsize(video_path)
+            except FileNotFoundError:
+                file_size = 0
+            st.caption(f"Render complete · {created} · {_format_file_size(file_size)}")
             video_col, seo_col = st.columns([1.15, 0.85])
             with video_col:
                 st.video(video_path)
-                with open(video_path, "rb") as video_file:
-                    st.download_button(
-                        "⬇️ Download MP4",
-                        data=video_file.read(),
-                        file_name=os.path.basename(video_path),
-                        mime="video/mp4",
-                        key=f"{key_prefix}_video_{job_id}",
-                        width="stretch",
-                    )
+                st.download_button(
+                    "⬇️ Download MP4",
+                    data=open(video_path, "rb"),
+                    file_name=os.path.basename(video_path),
+                    mime="video/mp4",
+                    key=f"{key_prefix}_video_{job_id}",
+                    width="stretch",
+                )
             with seo_col:
                 if os.path.isfile(seo_path):
                     with open(seo_path, "r", encoding="utf-8") as seo_file:
@@ -184,6 +193,7 @@ def render_completed_deliverables(records: list[dict], *, key_prefix: str, headi
                 else:
                     st.warning("The MP4 is ready, but its SEO package is missing. Generate it again only if you need the SEO text.")
 
+@st.cache_data(ttl=60)
 def detect_ollama_models() -> list[str]:
     import requests
     try:
@@ -494,6 +504,7 @@ st.markdown("""
 # Main Layout
 st.markdown("<h1 class='main-title'>🎥 AI CONTENT ENGINE</h1>", unsafe_allow_html=True)
 st.markdown("<p class='subtitle'>Deploy premium short-form viral AI reels with multi-lingual scripts & advanced TTS engines in a single click.</p>", unsafe_allow_html=True)
+st.warning("⚠️ Warning: Generating multiple reels at the same time is not officially supported and may lead to mixed results. Please wait for the current generation to finish.")
 
 # Initialize Session State
 if "uploaded_df" not in st.session_state:
@@ -847,7 +858,7 @@ with st.sidebar:
                     st.error(f"Intro video rejected: {reason}")
                 else:
                     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-                    intro_path = os.path.join(config.OUTPUT_DIR, "intro_bumper.mp4")
+                    intro_path = os.path.join(config.OUTPUT_DIR, f"intro_bumper_{uuid.uuid4().hex[:8]}.mp4")
                     with open(intro_path, "wb") as f:
                         f.write(intro_vid.getbuffer())
                     config.INTRO_BUMPER = intro_path
@@ -862,7 +873,7 @@ with st.sidebar:
                     st.error(f"Outro video rejected: {reason}")
                 else:
                     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-                    outro_path = os.path.join(config.OUTPUT_DIR, "outro_bumper.mp4")
+                    outro_path = os.path.join(config.OUTPUT_DIR, f"outro_bumper_{uuid.uuid4().hex[:8]}.mp4")
                     with open(outro_path, "wb") as f:
                         f.write(outro_vid.getbuffer())
                     config.OUTRO_BUMPER = outro_path
@@ -897,13 +908,14 @@ with st.sidebar:
                     st.error(f"Logo rejected: {reason}")
                 else:
                     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-                    logo_path = os.path.join(config.OUTPUT_DIR, "watermark.png")
+                    logo_path = os.path.join(config.OUTPUT_DIR, f"watermark_{uuid.uuid4().hex[:8]}.png")
                     with open(logo_path, "wb") as f:
                         f.write(logo_file.getbuffer())
+                    st.session_state["watermark_logo_path"] = logo_path
                     st.success("Logo uploaded successfully!")
             
             # Check if logo exists to enable size/opacity settings
-            logo_path = os.path.join(config.OUTPUT_DIR, "watermark.png")
+            logo_path = st.session_state.get("watermark_logo_path", os.path.join(config.OUTPUT_DIR, "watermark.png"))
             if os.path.exists(logo_path):
                 st.image(logo_path, caption="Active Watermark Logo", width=100)
                 logo_size = st.slider("Logo Size (width in px)", min_value=40, max_value=250, value=100)
@@ -963,7 +975,6 @@ with st.sidebar:
                 for attribute in saved:
                     value = updates[attribute].strip()
                     setattr(config, attribute, value)
-                    os.environ[attribute] = value
                 if saved:
                     st.toast(f"Saved and applied {len(saved)} API key(s) locally.", icon="🔐")
                     st.rerun()
@@ -1191,7 +1202,7 @@ with tabs[0]:
         elif mode == "Live News & RSS Scraping":
             if st.session_state.get("selected_article_data"):
                 art = st.session_state["selected_article_data"]
-                topics_list = [{"type": "rss", "link": art["link"], "desc": art["description"], "title": art["title"]}]
+                topics_list = [{"type": "rss", "link": art.get("link", ""), "desc": art.get("description", ""), "title": art.get("title", "")}]
             else:
                 if not news_url.strip():
                     st.error("Add a valid public RSS feed or article URL before starting.")
@@ -1239,7 +1250,10 @@ with tabs[0]:
 
     st.markdown("### 🧵 Background Render Queue")
     render_live_generation_status(config.OUTPUT_DIR)
-    current_records = JobStore(config.OUTPUT_DIR).list_jobs(limit=25)
+    try:
+        current_records = JobStore(config.OUTPUT_DIR).list_jobs(limit=25)
+    except OSError:
+        current_records = []
     tracked_ids = st.session_state.get("latest_render_job_ids", [])
     tracked_records = [record for record in current_records if record.get("job_id") in tracked_ids]
     completed_current_records = completed_deliverable_records(tracked_records)
@@ -1258,7 +1272,10 @@ with tabs[1]:
     st.caption("Preview completed videos, download deliverables and keep an eye on every render in one place.")
 
     try:
-        job_store = JobStore(config.OUTPUT_DIR)
+        try:
+            job_store = JobStore(config.OUTPUT_DIR)
+        except OSError:
+            raise Exception("JobStore access failed")
         manager = get_job_manager(config.JOB_WORKER_MODE)
         recent_jobs = job_store.list_jobs(limit=15)
         completed_count = sum(record.get("status") == "succeeded" for record in recent_jobs)
@@ -1351,22 +1368,25 @@ with tabs[1]:
         modified = datetime.fromtimestamp(os.path.getmtime(selected_video)).strftime("%d %b %Y · %I:%M %p")
         with st.container(border=True):
             st.markdown(f"<div class='gallery-card-title'>🎬 {file_title}</div>", unsafe_allow_html=True)
+            try:
+                file_size = os.path.getsize(selected_video)
+            except FileNotFoundError:
+                file_size = 0
             st.markdown(
-                f"<div class='gallery-meta'>Exported {modified} · {_format_file_size(os.path.getsize(selected_video))} · Vertical reel deliverable</div>",
+                f"<div class='gallery-meta'>Exported {modified} · {_format_file_size(file_size)} · Vertical reel deliverable</div>",
                 unsafe_allow_html=True,
             )
             col_g_vid, col_g_txt = st.columns([1.15, 0.85])
             with col_g_vid:
                 st.video(selected_video)
-                with open(selected_video, "rb") as video_file:
-                    st.download_button(
-                        "⬇️ Download MP4",
-                        data=video_file.read(),
-                        file_name=file_basename,
-                        mime="video/mp4",
-                        key=f"download_video_{file_title}",
-                        width="stretch",
-                    )
+                st.download_button(
+                    "⬇️ Download MP4",
+                    data=open(selected_video, "rb"),
+                    file_name=file_basename,
+                    mime="video/mp4",
+                    key=f"download_video_{file_title}",
+                    width="stretch",
+                )
             with col_g_txt:
                 if os.path.exists(txt_path):
                     with open(txt_path, "r", encoding="utf-8") as seo_file:

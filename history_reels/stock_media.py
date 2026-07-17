@@ -183,12 +183,12 @@ def download_clip_for_query(query, index, job: GenerationJob):
                 r = requests.get(url, timeout=15)
                 if r.status_code == 200:
                     results = r.json().get("results", [])
-                    results = [r_item for r_item in results if str(r_item.get('id')) not in job.DOWNLOADED_VIDEO_IDS]
+                    results = [r_item for r_item in results if str(r_item.get('id')) not in getattr(job, "DOWNLOADED_VIDEO_IDS", set())]
                     if results:
                         item = results[0]
                         preview_url = item.get("preview_url")
                         if preview_url and download_file_with_retry(preview_url, save_path):
-                            job.DOWNLOADED_VIDEO_IDS.add(str(item.get('id')))
+                            getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(str(item.get('id')))
                             job.VIDEO_ATTRIBUTIONS.append(f"Storyblocks Video: {item.get('title')} (ID: {item.get('id')})")
                             _report_media_event(job, f"Visual {index}: Storyblocks video downloaded.")
                             return True
@@ -206,11 +206,11 @@ def download_clip_for_query(query, index, job: GenerationJob):
                     candidates = []
                     for v in videos:
                         v_id = str(v.get("id"))
-                        v_dur = v.get("duration", 0)
+                        v_dur = (v.get("duration") or 0)
                         width = v.get("width", 1)
                         height = v.get("height", 1)
                         score = media_quality_score(width, height, job, v_dur)
-                        if v_id in job.DOWNLOADED_VIDEO_IDS or v_dur < 5 or score < 0:
+                        if v_id in getattr(job, "DOWNLOADED_VIDEO_IDS", set()) or v_dur < 5 or score < 0:
                             continue
                         candidates.append((score, v))
                     if candidates:
@@ -221,7 +221,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                         link = next((vf.get("link") for vf in video_files if vf.get("width") in [720, 1080]), None)
                         if not link and video_files: link = video_files[0].get("link")
                         if link and download_file_with_retry(link, save_path):
-                            job.DOWNLOADED_VIDEO_IDS.add(str(selected_v.get("id")))
+                            getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(str(selected_v.get("id")))
                             user_info = selected_v.get("user", {})
                             job.VIDEO_ATTRIBUTIONS.append(f"Pexels Video by {user_info.get('name', 'Unknown')} ({selected_v.get('url', '')})")
                             _report_media_event(job, f"Visual {index}: Pexels video downloaded.")
@@ -236,18 +236,18 @@ def download_clip_for_query(query, index, job: GenerationJob):
                 r = requests.get(url, timeout=15)
                 if r.status_code == 200:
                     hits = r.json().get("hits", [])
-                    candidates = [h for h in hits if str(h.get("id")) not in job.DOWNLOADED_VIDEO_IDS and h.get("duration", 0) >= 5]
-                    candidates = [h for h in candidates if any(media_quality_score(v.get("width"), v.get("height"), job, h.get("duration", 0)) >= 0 for v in h.get("videos", {}).values())]
+                    candidates = [h for h in hits if str(h.get("id")) not in getattr(job, "DOWNLOADED_VIDEO_IDS", set()) and (h.get("duration") or 0) >= 5]
+                    candidates = [h for h in candidates if any(media_quality_score(v.get("width"), v.get("height"), job, (h.get("duration") or 0)) >= 0 for v in (h.get("videos") or {}).values())]
                     if candidates:
-                        candidates.sort(key=lambda h: max(media_quality_score(v.get("width"), v.get("height"), job, h.get("duration", 0)) for v in h.get("videos", {}).values()), reverse=True)
+                        candidates.sort(key=lambda h: max(media_quality_score(v.get("width"), v.get("height"), job, (h.get("duration") or 0)) for v in (h.get("videos") or {}).values()), reverse=True)
                         selected_h = random.choice(candidates[:min(3, len(candidates))])
-                        videos = selected_h.get("videos", {})
-                        candidates_by_quality = [v for v in videos.values() if media_quality_score(v.get("width"), v.get("height"), job, selected_h.get("duration", 0)) >= 0]
-                        candidates_by_quality.sort(key=lambda v: media_quality_score(v.get("width"), v.get("height"), job, selected_h.get("duration", 0)), reverse=True)
+                        videos = selected_h.get("videos") or {}
+                        candidates_by_quality = [v for v in videos.values() if media_quality_score(v.get("width"), v.get("height"), job, (selected_h.get("duration") or 0)) >= 0]
+                        candidates_by_quality.sort(key=lambda v: media_quality_score(v.get("width"), v.get("height"), job, (selected_h.get("duration") or 0)), reverse=True)
                         video_obj = candidates_by_quality[0] if candidates_by_quality else None
                         link = video_obj.get("url") if video_obj else None
                         if link and download_file_with_retry(link, save_path):
-                            job.DOWNLOADED_VIDEO_IDS.add(str(selected_h.get("id")))
+                            getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(str(selected_h.get("id")))
                             job.VIDEO_ATTRIBUTIONS.append(f"Pixabay Video by {selected_h.get('user', 'Unknown')} (ID: {selected_h.get('id')})")
                             _report_media_event(job, f"Visual {index}: Pixabay video downloaded.")
                             return True
@@ -259,12 +259,12 @@ def download_clip_for_query(query, index, job: GenerationJob):
             try:
                 urls = search_google_images(query)
                 for selected_url in urls[:10]:
-                    if selected_url in job.DOWNLOADED_VIDEO_IDS:
+                    if selected_url in getattr(job, "DOWNLOADED_VIDEO_IDS", set()):
                         continue
                     ext = ".png" if ".png" in selected_url.lower() else ".jpg"
                     img_save_path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{index}{ext}")
                     if download_file_with_retry(selected_url, img_save_path):
-                        job.DOWNLOADED_VIDEO_IDS.add(selected_url)
+                        getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(selected_url)
                         job.VIDEO_ATTRIBUTIONS.append(f"Google/Bing Image: {selected_url[:80]}...")
                         _report_media_event(job, f"Visual {index}: Google/Bing image downloaded.")
                         return True
@@ -276,12 +276,12 @@ def download_clip_for_query(query, index, job: GenerationJob):
             try:
                 urls = search_pinterest_images(query)
                 for selected_url in urls[:10]:
-                    if selected_url in job.DOWNLOADED_VIDEO_IDS:
+                    if selected_url in getattr(job, "DOWNLOADED_VIDEO_IDS", set()):
                         continue
                     ext = ".png" if ".png" in selected_url.lower() else ".jpg"
                     img_save_path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{index}{ext}")
                     if download_file_with_retry(selected_url, img_save_path):
-                        job.DOWNLOADED_VIDEO_IDS.add(selected_url)
+                        getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(selected_url)
                         job.VIDEO_ATTRIBUTIONS.append(f"Pinterest Image: {selected_url[:80]}...")
                         _report_media_event(job, f"Visual {index}: Pinterest image downloaded.")
                         return True
@@ -300,12 +300,12 @@ def download_clip_for_query(query, index, job: GenerationJob):
                     if info:
                         img_url = info[0].get("url")
                         if img_url and img_url.lower().endswith(('.jpg', '.jpeg', '.png')):
-                            if img_url in job.DOWNLOADED_VIDEO_IDS:
+                            if img_url in getattr(job, "DOWNLOADED_VIDEO_IDS", set()):
                                 continue
                             ext = ".png" if ".png" in img_url.lower() else ".jpg"
                             img_save_path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{index}{ext}")
                             if download_file_with_retry(img_url, img_save_path):
-                                job.DOWNLOADED_VIDEO_IDS.add(img_url)
+                                getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(img_url)
                                 job.VIDEO_ATTRIBUTIONS.append(f"Wikimedia Commons Image: {page_data.get('title', '')}")
                                 _report_media_event(job, f"Visual {index}: Wikimedia Commons image downloaded.")
                                 return True
@@ -322,14 +322,14 @@ def download_clip_for_query(query, index, job: GenerationJob):
                     r = requests.get(url, headers=headers, timeout=15)
                     results = r.json().get("results", [])
                     for item in results:
-                        img_url = item.get("urls", {}).get("regular")
+                        img_url = (item.get("urls") or {}).get("regular")
                         if img_url:
-                            if img_url in job.DOWNLOADED_VIDEO_IDS:
+                            if img_url in getattr(job, "DOWNLOADED_VIDEO_IDS", set()):
                                 continue
                             ext = ".jpg"
                             img_save_path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{index}{ext}")
                             if download_file_with_retry(img_url, img_save_path):
-                                job.DOWNLOADED_VIDEO_IDS.add(img_url)
+                                getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(img_url)
                                 author = item.get("user", {}).get("name", "Unknown")
                                 job.VIDEO_ATTRIBUTIONS.append(f"Unsplash Image by {author}")
                                 _report_media_event(job, f"Visual {index}: Unsplash image downloaded.")
@@ -350,12 +350,12 @@ def download_clip_for_query(query, index, job: GenerationJob):
                     if links:
                         img_url = links[0].get("href")
                         if img_url:
-                            if img_url in job.DOWNLOADED_VIDEO_IDS:
+                            if img_url in getattr(job, "DOWNLOADED_VIDEO_IDS", set()):
                                 continue
                             ext = ".jpg"
                             img_save_path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{index}{ext}")
                             if download_file_with_retry(img_url, img_save_path):
-                                job.DOWNLOADED_VIDEO_IDS.add(img_url)
+                                getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(img_url)
                                 job.VIDEO_ATTRIBUTIONS.append(f"NASA Image")
                                 _report_media_event(job, f"Visual {index}: NASA image downloaded.")
                                 return True
@@ -374,14 +374,19 @@ def download_clip_for_query(query, index, job: GenerationJob):
                         meta_url = f"https://archive.org/metadata/{identifier}"
                         meta_r = requests.get(meta_url, timeout=10)
                         files = meta_r.json().get("files", [])
-                        mp4_file = next((f for f in files if f.get("name", "").endswith(".mp4") and int(f.get("size", 999999999)) < 100_000_000), None)
+                        def _get_size(f_obj):
+                            try:
+                                return int(f_obj.get("size", 999999999))
+                            except ValueError:
+                                return 0
+                        mp4_file = next((f for f in files if f.get("name", "").endswith(".mp4") and _get_size(f) < 100_000_000), None)
                         if mp4_file:
                             video_url = f"https://archive.org/download/{identifier}/{mp4_file['name']}"
-                            if video_url in job.DOWNLOADED_VIDEO_IDS:
+                            if video_url in getattr(job, "DOWNLOADED_VIDEO_IDS", set()):
                                 continue
                             save_path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{index}.mp4")
                             if download_file_with_retry(video_url, save_path):
-                                job.DOWNLOADED_VIDEO_IDS.add(video_url)
+                                getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(video_url)
                                 job.VIDEO_ATTRIBUTIONS.append(f"Internet Archive Video: {doc.get('title', 'Unknown')}")
                                 _report_media_event(job, f"Visual {index}: Internet Archive video downloaded.")
                                 return True

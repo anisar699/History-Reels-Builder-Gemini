@@ -66,6 +66,17 @@ def build_video_frames(job: GenerationJob, voice_dur):
                 if crop_h % 2 != 0:
                     crop_h += 1
 
+            if (w / h) > target_aspect:
+                crop_h = h
+                crop_w = int(h * target_aspect)
+                if crop_w % 2 != 0:
+                    crop_w += 1
+            else:
+                crop_w = w
+                crop_h = int(w / target_aspect)
+                if crop_h % 2 != 0:
+                    crop_h += 1
+
             crop_w = min(crop_w, w - (w % 2))
             crop_h = min(crop_h, h - (h % 2))
             offset_x = max(0, (w - crop_w) // 2)
@@ -74,7 +85,7 @@ def build_video_frames(job: GenerationJob, voice_dur):
             vf = f"crop={crop_w}:{crop_h}:{offset_x}:{offset_y},scale={job.VIDEO_WIDTH}:{job.VIDEO_HEIGHT}"
             cmd = [
                 "ffmpeg", "-y", "-ss", "0.0", "-stream_loop", "-1", "-i", raw_path_mp4, "-t", f"{clip_dur:.3f}",
-                "-vf", vf, "-an", "-r", str(job.FPS), clip_path
+                "-vf", vf, "-an", "-r", str(job.FPS), "-pix_fmt", "yuv420p", clip_path
             ]
             subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)
             
@@ -86,10 +97,10 @@ def build_video_frames(job: GenerationJob, voice_dur):
                 
             scale_w = int(job.VIDEO_WIDTH * 2)
             scale_h = int(job.VIDEO_HEIGHT * 2)
-            vf_zoom = f"scale={scale_w}:{scale_h},zoompan=z='zoom+0.0005':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={int(job.FPS * clip_dur)}:s={job.VIDEO_WIDTH}x{job.VIDEO_HEIGHT},fps={job.FPS}"
+            vf_zoom = f"scale={scale_w}:{scale_h}:force_original_aspect_ratio=decrease,pad={scale_w}:{scale_h}:(ow-iw)/2:(oh-ih)/2,zoompan=z='zoom+0.0005':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={int(job.FPS * clip_dur)}:s={job.VIDEO_WIDTH}x{job.VIDEO_HEIGHT},fps={job.FPS}"
             cmd = [
                 "ffmpeg", "-y", "-loop", "1", "-i", img_path, "-t", f"{clip_dur:.3f}",
-                "-vf", vf_zoom, "-an", "-r", str(job.FPS), clip_path
+                "-vf", vf_zoom, "-an", "-r", str(job.FPS), "-pix_fmt", "yuv420p", clip_path
             ]
             subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)
         
@@ -214,19 +225,19 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
         for j, off in enumerate(offsets):
             offset_ms = int(off * 1000)
             filter_parts.append(f"[w{j}]adelay={offset_ms}|{offset_ms},volume=0.45[whoosh{j}]")
-        filter_parts.append("".join(f"[whoosh{j}]" for j in range(num_t)) + f"amix=inputs={num_t}:duration=first[whoosh_mix]")
-        filter_parts.append("[music][voice][whoosh_mix]amix=inputs=3:duration=first:dropout_transition=2[pre_out]")
+        filter_parts.append("".join(f"[whoosh{j}]" for j in range(num_t)) + f"amix=inputs={num_t}:duration=longest[whoosh_mix]")
+        filter_parts.append("[music][voice][whoosh_mix]amix=inputs=3:duration=longest:dropout_transition=2[pre_out]")
     else:
-        filter_parts.append("[music][voice]amix=inputs=2:duration=first:dropout_transition=2[pre_out]")
+        filter_parts.append("[music][voice]amix=inputs=2:duration=longest:dropout_transition=2[pre_out]")
         
     ambient_sound = getattr(job, "AMBIENT_SOUND", None)
     if ambient_sound:
         if ambient_sound == "rain":
-            filter_parts.append(f"anoisesrc=a=0.15:c=pink:d={voice_dur:.3f},lowpass=f=1200[amb];[pre_out][amb]amix=inputs=2:duration=first:dropout_transition=2[out]")
+            filter_parts.append(f"anoisesrc=a=0.15:c=pink:d={voice_dur:.3f},lowpass=f=1200[amb];[pre_out][amb]amix=inputs=2:duration=longest:dropout_transition=2[out]")
         elif ambient_sound == "wind":
-            filter_parts.append(f"anoisesrc=a=0.3:c=brown:d={voice_dur:.3f},lowpass=f=500[amb];[pre_out][amb]amix=inputs=2:duration=first:dropout_transition=2[out]")
+            filter_parts.append(f"anoisesrc=a=0.3:c=brown:d={voice_dur:.3f},lowpass=f=500[amb];[pre_out][amb]amix=inputs=2:duration=longest:dropout_transition=2[out]")
         elif ambient_sound == "rumble":
-            filter_parts.append(f"anoisesrc=a=0.4:c=brown:d={voice_dur:.3f},lowpass=f=80[amb];[pre_out][amb]amix=inputs=2:duration=first:dropout_transition=2[out]")
+            filter_parts.append(f"anoisesrc=a=0.4:c=brown:d={voice_dur:.3f},lowpass=f=80[amb];[pre_out][amb]amix=inputs=2:duration=longest:dropout_transition=2[out]")
         else:
             filter_parts.append("[pre_out]acopy[out]")
     else:
@@ -299,21 +310,15 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
     
     wm_text = getattr(job, "WATERMARK_TEXT", "")
     if wm_text:
-        safe_text = wm_text.replace("'", "'\\\\''")
-        safe_text = safe_text.replace(":", "\\\\:")
-        safe_text = safe_text.replace(";", "\\\\;")
-        font_clean = job.FONT_PATH.replace("\\", "/").replace(":", "\\:")
+        safe_text = wm_text.replace("'", "'\\''")
+        safe_text = safe_text.replace(";", "\\;")
+        font_clean = job.FONT_PATH.replace("\\", "/")
         font_arg = f":fontfile='{font_clean}'" if os.path.exists(job.FONT_PATH) else ""
         v_filters.append(f"drawtext=text='{safe_text}':fontsize=22:fontcolor=white@0.6{font_arg}:x=(w-tw)/2:y=h-70")
         
-    ass_path_clean = ass_path.replace("\\", "/").replace(":", "\\:")
-    font_dir_clean = os.path.dirname(os.path.abspath(job.FONT_PATH)).replace("\\", "/").replace(":", "\\:")
+    ass_path_clean = ass_path.replace("\\", "/")
+    font_dir_clean = os.path.dirname(os.path.abspath(job.FONT_PATH)).replace("\\", "/")
     v_filters.append(f"subtitles='{ass_path_clean}':fontsdir='{font_dir_clean}'")
-    
-    base_v_filter = ",".join(v_filters)
-    filter_parts.append(f"[0:v]{base_v_filter}[v_graded]")
-    last_v_label = "[v_graded]"
-    
     # 2. Progress Bar Overlay
     show_bar = getattr(job, "SHOW_PROGRESS_BAR", True)
     bar_color = getattr(job, "PROGRESS_BAR_COLOR", "gold").lower()

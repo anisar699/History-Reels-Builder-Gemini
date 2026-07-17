@@ -119,6 +119,10 @@ class ScriptConfig(BaseModel):
             raise ValueError("At least one narration is required.")
         if len(self.captions) != len(self.narrations):
             raise ValueError("Captions and narrations must contain the same number of slides.")
+        while len(self.queries) < len(self.captions):
+            self.queries.append("cinematic")
+        if len(self.queries) > len(self.captions):
+            self.queries = self.queries[:len(self.captions)]
         return self
 
 
@@ -241,7 +245,10 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"Network error: {e}")
-        result = response.json()
+        try:
+            result = response.json()
+        except Exception as e:
+            raise RuntimeError(f"Failed to decode JSON: {e}")
         
         try:
             raw_text = result["candidates"][0]["content"]["parts"][0]["text"]
@@ -279,7 +286,10 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
             if error_response is None:
                 error_response = response
             raise build_api_request_error("OpenAI", error_response, e) from e
-        result = response.json()
+        try:
+            result = response.json()
+        except Exception as e:
+            raise RuntimeError(f"Failed to decode JSON: {e}")
         try:
             content = result["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:
@@ -312,7 +322,10 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"Network error: {e}")
-        result = response.json()
+        try:
+            result = response.json()
+        except Exception as e:
+            raise RuntimeError(f"Failed to decode JSON: {e}")
         try:
             content = result["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:
@@ -339,7 +352,10 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"Network error: {e}")
-        result = response.json()
+        try:
+            result = response.json()
+        except Exception as e:
+            raise RuntimeError(f"Failed to decode JSON: {e}")
         try:
             content = result["message"]["content"]
         except (KeyError, TypeError) as e:
@@ -374,7 +390,10 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"Network error: {e}")
-        result = response.json()
+        try:
+            result = response.json()
+        except Exception as e:
+            raise RuntimeError(f"Failed to decode JSON: {e}")
         try:
             content = result["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:

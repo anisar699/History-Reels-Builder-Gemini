@@ -38,10 +38,7 @@ class GenerationJob:
     current_stage: str = "queued"
 
     def __getattr__(self, name: str) -> Any:
-        try:
-            return self.values[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
+        return self.values.get(name)
 
     def __setattr__(self, name: str, value: Any) -> None:
         if name in {"job_id", "workspace", "values", "created_at", "last_error", "history_store", "status", "progress", "current_stage"}:
@@ -55,11 +52,13 @@ class GenerationJob:
 
     @property
     def video_path(self) -> str:
-        return os.path.join(self.OUTPUT_DIR, f"{self.OUTPUT_NAME}.mp4")
+        base_dir = getattr(self, "CUSTOM_SAVE_DIR", None) or self.OUTPUT_DIR
+        return os.path.join(base_dir, f"{self.OUTPUT_NAME}.mp4")
 
     @property
     def seo_path(self) -> str:
-        return os.path.join(self.OUTPUT_DIR, f"{self.OUTPUT_NAME}.txt")
+        base_dir = getattr(self, "CUSTOM_SAVE_DIR", None) or self.OUTPUT_DIR
+        return os.path.join(base_dir, f"{self.OUTPUT_NAME}.txt")
 
     def prepare_workspace(self) -> None:
         os.makedirs(self.TOPIC_TEMP_DIR, exist_ok=False)
@@ -90,8 +89,8 @@ class GenerationJob:
         return f"{clean_title} {clean_year} {self.voice_label()} {self.short_id}"
 
     def apply_script(self, ai_data: dict[str, Any], track_index: int) -> None:
-        self.TOPIC_TITLE = ai_data["title"]
-        self.TOPIC_YEAR = ai_data["year"]
+        self.TOPIC_TITLE = ai_data.get("title", "Untitled")
+        self.TOPIC_YEAR = ai_data.get("year", "Unknown")
         # The dashboard's selected vibe is part of the job snapshot. Keep it
         # authoritative while retaining the model's suggestion for diagnostics.
         self.AI_SUGGESTED_MUSIC_VIBE = ai_data.get("bg_music_vibe", "mystery")
@@ -108,7 +107,7 @@ class GenerationJob:
             self.NARRATIONS = [ai_data.get(f"narration_text_{i}", "") for i in range(1, 5)]
 
         self.FULL_SPEECH_TEXT = " ".join(n for n in self.NARRATIONS if n.strip())
-        self.QUERIES = list(ai_data["queries"])
+        self.QUERIES = list(ai_data.get("queries", []))
         self.SEO_TITLE = ai_data.get("seo_title", f"{self.TOPIC_TITLE} ({self.TOPIC_YEAR})")
         self.SEO_DESCRIPTION = ai_data.get("seo_description", self.FULL_SPEECH_TEXT)
         self.SEO_HASHTAGS = ai_data.get("seo_hashtags", "#Reels #ShortVideos #ContentCreator")
@@ -127,7 +126,7 @@ def create_generation_job(runtime_config: Any) -> GenerationJob:
         if key.isupper()
     }
     job_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
-    jobs_root = os.path.join(values["TEMP_DIR"], "jobs")
+    jobs_root = os.path.join(values.get("TEMP_DIR", "temp"), "jobs")
     workspace = os.path.join(jobs_root, job_id)
     values["TOPIC_TEMP_DIR"] = workspace
     values["LAST_ERROR_MESSAGE"] = ""

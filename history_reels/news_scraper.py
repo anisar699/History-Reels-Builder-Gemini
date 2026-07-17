@@ -37,9 +37,13 @@ def fetch_public_response(url, headers, timeout=15):
 
         response.raise_for_status()
         content_length = response.headers.get("Content-Length")
-        if content_length and int(content_length) > MAX_RESPONSE_BYTES:
-            response.close()
-            raise ValueError("Remote content exceeds the 2 MB safety limit.")
+        if content_length:
+            try:
+                if int(content_length) > MAX_RESPONSE_BYTES:
+                    response.close()
+                    raise ValueError("Remote content exceeds the 2 MB safety limit.")
+            except ValueError:
+                pass
         chunks = []
         total = 0
         for chunk in response.iter_content(chunk_size=64 * 1024):

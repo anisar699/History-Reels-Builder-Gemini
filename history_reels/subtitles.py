@@ -9,10 +9,16 @@ def format_ass_time(seconds):
     if cs == 100:
         s += 1
         cs = 0
+    if s == 60:
+        m += 1
+        s = 0
+    if m >= 60:
+        h += 1
+        m = m % 60
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 def markdown_to_ass(text):
-    text = str(text).replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+    text = str(text).replace("\\", "\\\\")
     # Convert newlines
     text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\N")
     # Convert markdown **text** to ASS bold and golden-yellow color overrides

@@ -18,6 +18,8 @@ Now upgraded to a **Fully Dynamic System** supporting videos up to 10 minutes lo
 * **Cinematic Visual Effects:** Added support for Color Grading LUTs (Cyberpunk, Vintage, Horror), Cinematic Film Grain, and high-energy Camera Shake transitions.
 * **Pro Audio Mastering:** Smart Audio Ducking (music lowers when AI speaks), Voice EQ Compression, and dynamic Ambient Soundscapes (Rain, Wind, Rumble).
 * **Branding Options:** Burn translucent Custom Brand Logos/Watermarks, attach Intro/Outro Bumper clips automatically, and display an animated Progress Bar.
+* **Custom Export Directory:** Choose exactly where your final MP4s and SEO text files are saved on your PC right from the UI (using a native file browser).
+* **Rock-Solid Stability (Multi-Agent Patched):** Massive architecture improvements ensuring flawless partial-download handling, graceful JSON fallbacks, precise FFmpeg text escaping, and bulletproof rendering reliability.
 * **Approved Media Sources:** Uses the selected Pexels, Pixabay, Google/Bing image, and Wikimedia image providers. Low-quality candidates are rejected before download, and the renderer reuses valid assets rather than creating blank frames when a subset of media requests fails.
 
 ---
