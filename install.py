@@ -7,7 +7,7 @@ def run_command(cmd, shell=True):
     print(f"\n>>> Running: {cmd}")
     subprocess.run(cmd, shell=shell)
 
-print("🚀 Starting Automatic Setup for History Reels Builder...")
+print("🚀 Starting Automatic Setup for AI Reels Studio...")
 print("======================================================")
 
 # 1. Install FFmpeg if not present

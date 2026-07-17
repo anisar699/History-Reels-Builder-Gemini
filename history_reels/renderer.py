@@ -21,11 +21,14 @@ def build_video_frames(job: GenerationJob, voice_dur):
     
     target_clip_dur = getattr(job, "CLIP_DURATION_TARGET", 5.0)
     divisor = max(0.1, target_clip_dur - job.CROSSFADE_DUR)
-    estimated_clips = int(round((voice_dur - job.CROSSFADE_DUR) / divisor))
+    estimated_clips = max(1, int(round((voice_dur - job.CROSSFADE_DUR) / divisor)))
     
     repeats = 2 if target_clip_dur < 4.0 else 1
-    max_available = len(job.QUERIES) * repeats
-    num_clips = max(4, min(estimated_clips, max_available))
+    available_media = len(job.QUERIES)
+    if available_media < 1:
+        raise RuntimeError("No usable media assets are available for frame generation.")
+    max_available = max(4, available_media * repeats)
+    num_clips = min(max(4, estimated_clips), max_available)
     
     job.NUM_CLIPS = num_clips
     
@@ -35,9 +38,10 @@ def build_video_frames(job: GenerationJob, voice_dur):
     
     clips = []
     for i in range(1, job.NUM_CLIPS + 1):
-        raw_path_mp4 = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{i}.mp4")
-        raw_path_jpg = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{i}.jpg")
-        raw_path_png = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{i}.png")
+        source_index = ((i - 1) % available_media) + 1
+        raw_path_mp4 = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{source_index}.mp4")
+        raw_path_jpg = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{source_index}.jpg")
+        raw_path_png = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{source_index}.png")
         
         clip_path = os.path.join(job.TOPIC_TEMP_DIR, f"clip{i}.mp4")
         clips.append(clip_path)
@@ -46,15 +50,10 @@ def build_video_frames(job: GenerationJob, voice_dur):
             # Process Video Clip
             w, h = get_video_dimensions(raw_path_mp4)
             if w <= 0 or h <= 0:
-                print(f"Warning: Invalid dimensions ({w}x{h}) for clip {i}. Skipping.")
-                # Create a black placeholder clip
-                cmd = [
-                    "ffmpeg", "-y", "-f", "lavfi", "-i",
-                    f"color=c=black:s={job.VIDEO_WIDTH}x{job.VIDEO_HEIGHT}:d={clip_dur:.3f}:r={job.FPS}",
-                    "-an", clip_path
-                ]
-                subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)
-                continue
+                raise RuntimeError(
+                    f"Downloaded media clip {source_index} has invalid dimensions ({w}x{h}); "
+                    "a blank placeholder will not be used. Retry to download fresh media."
+                )
             target_aspect = job.VIDEO_WIDTH / job.VIDEO_HEIGHT
             if (w / h) > target_aspect:
                 crop_h = h
@@ -108,7 +107,7 @@ def build_video_frames(job: GenerationJob, voice_dur):
     curr_offset = clip_dur - job.CROSSFADE_DUR
     job.TRANSITION_OFFSETS = []
     
-    transition_style = getattr(config, "VIDEO_TRANSITION", "fade").lower()
+    transition_style = str(getattr(job, "VIDEO_TRANSITION", "fade")).lower()
     allowed_transitions = ["fade", "slideleft", "slideright", "slideup", "slidedown", "wipeleft", "wiperight", "zoomin", "dissolve", "pixelize", "radial"]
     
     for i in range(1, job.NUM_CLIPS):
@@ -137,13 +136,21 @@ def build_video_frames(job: GenerationJob, voice_dur):
     subprocess.run(cmd_fade, check=True, stdin=subprocess.DEVNULL)
 
 def setup_fontconfig(job: GenerationJob):
-    fonts_dir = os.path.join(job.OUTPUT_DIR, "fonts")
-    fonts_dir_clean = fonts_dir.replace("\\", "/")
+    font_dirs = {
+        os.path.dirname(os.path.abspath(job.FONT_PATH)),
+        os.path.join(job.OUTPUT_DIR, "fonts"),
+        getattr(job, "ASSETS_DIR", ""),
+    }
+    font_dir_lines = "\n".join(
+        f"    <dir>{directory.replace('\\', '/')}</dir>"
+        for directory in sorted(font_dirs)
+        if directory
+    )
     
     fonts_conf_content = f"""<?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
 <fontconfig>
-    <dir>{fonts_dir_clean}</dir>
+{font_dir_lines}
 </fontconfig>
 """
     fonts_conf_path = os.path.join(job.TOPIC_TEMP_DIR, "fonts.conf")
@@ -183,16 +190,14 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
         voice_filter += ",equalizer=f=100:width_type=h:width=100:g=4,equalizer=f=3500:width_type=h:width=2000:g=2,acompressor=threshold=0.08:ratio=3:attack=20:release=150"
     voice_filter += ",volume=1.8"
     
-    # 2. Music processing chain
-    music_vol = 0.25 if ducking else 0.15
-    fade_out_st = max(0.0, voice_dur - 0.8)
-    music_filter = f"[0:a]atrim=0:{voice_dur:.3f},asetpts=PTS-STARTPTS,afade=t=in:d=0.5,afade=t=out:st={fade_out_st:.3f}:d=0.8,volume={music_vol}"
-    
-    # 3. Filter complex composition
+    # 2. Filter complex composition.
     filter_parts = []
     use_whooshes = trans_sfx and bool(getattr(job, "TRANSITION_OFFSETS", []))
     whoosh_input_index = 2
     
+    music_vol = 0.25 if ducking else 0.15
+    fade_out_st = max(0.0, voice_dur - 0.8)
+    music_filter = f"[0:a]atrim=0:{voice_dur:.3f},asetpts=PTS-STARTPTS,afade=t=in:d=0.5,afade=t=out:st={fade_out_st:.3f}:d=0.8,volume={music_vol}"
     if ducking:
         filter_parts.append(f"{voice_filter}[voice_full]")
         filter_parts.append("[voice_full]asplit=2[sc][voice]")
@@ -226,28 +231,35 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
             filter_parts.append("[pre_out]acopy[out]")
     else:
         filter_parts.append("[pre_out]acopy[out]")
+
+    # Keep every export at a consistent listening level after voice, music,
+    # ambient audio, and transition effects have been mixed together.
+    audio_output_label = "[out]"
+    if getattr(job, "AUDIO_NORMALIZATION", True):
+        target_lufs = float(getattr(job, "AUDIO_TARGET_LUFS", -16.0))
+        true_peak = float(getattr(job, "AUDIO_TRUE_PEAK_DB", -1.5))
+        loudness_range = float(getattr(job, "AUDIO_LOUDNESS_RANGE", 11.0))
+        filter_parts.append(
+            f"[out]loudnorm=I={target_lufs:.1f}:TP={true_peak:.1f}:LRA={loudness_range:.1f}[normalized]"
+        )
+        audio_output_label = "[normalized]"
         
     filter_complex = ";".join(filter_parts)
     
-    cmd_audio = [
-        "ffmpeg", "-y", "-stream_loop", "-1", "-i", music_mp3, "-i", voice_mp3
-    ]
+    cmd_audio = ["ffmpeg", "-y", "-stream_loop", "-1", "-i", music_mp3, "-i", voice_mp3]
     if use_whooshes:
         whoosh_wav = generate_whoosh_sound(job)
         cmd_audio.extend(["-i", whoosh_wav])
         
     cmd_audio.extend([
         "-filter_complex", filter_complex,
-        "-map", "[out]", drone_wav
+        "-map", audio_output_label, drone_wav
     ])
     subprocess.run(cmd_audio, check=True, stdin=subprocess.DEVNULL)
     
-    # Write ASS subtitle file
-    ass_filename = "subtitles.ass"
-    ass_path = os.path.join(job.TOPIC_TEMP_DIR, ass_filename)
+    # Write ASS captions using the selected sidebar font configuration.
+    ass_path = os.path.join(job.TOPIC_TEMP_DIR, "subtitles.ass")
     write_ass_subtitles(ass_path, job)
-    
-    # Configure Fontconfig
     setup_fontconfig(job)
     
     print("Merging audio and video with color grading, fades, ASS subtitles, and custom overlays...")
@@ -294,7 +306,7 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
         font_arg = f":fontfile='{font_clean}'" if os.path.exists(job.FONT_PATH) else ""
         v_filters.append(f"drawtext=text='{safe_text}':fontsize=22:fontcolor=white@0.6{font_arg}:x=(w-tw)/2:y=h-70")
         
-    ass_path_clean = os.path.join(job.TOPIC_TEMP_DIR, "subtitles.ass").replace("\\", "/").replace(":", "\\:")
+    ass_path_clean = ass_path.replace("\\", "/").replace(":", "\\:")
     font_dir_clean = os.path.dirname(os.path.abspath(job.FONT_PATH)).replace("\\", "/").replace(":", "\\:")
     v_filters.append(f"subtitles='{ass_path_clean}':fontsdir='{font_dir_clean}'")
     
@@ -339,7 +351,7 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
         "-map", "1:a",
         "-shortest",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-preset", "fast",
-        "-c:a", "aac", "-b:a", "192k", "output.mp4"
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "output.mp4"
     ])
     subprocess.run(cmd_merge, check=True, cwd=job.TOPIC_TEMP_DIR, stdin=subprocess.DEVNULL)
 

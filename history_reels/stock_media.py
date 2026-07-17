@@ -6,6 +6,29 @@ import re
 import json
 from history_reels.jobs import GenerationJob
 
+
+# Pinterest is intentionally excluded even from saved/retried job settings:
+# its scraped results can be generic social-media artwork instead of footage
+# related to the requested topic.
+BLOCKED_MEDIA_SOURCES = {"pinterest"}
+
+
+def media_quality_score(width, height, job: GenerationJob, duration=0) -> int:
+    """Rank source metadata for a clean crop without accepting tiny clips."""
+    try:
+        width, height = int(width or 0), int(height or 0)
+    except (TypeError, ValueError):
+        return -1
+    minimum = int(getattr(job, "MIN_MEDIA_DIMENSION", 480) or 480)
+    if min(width, height) < minimum:
+        return -1
+    target_ratio = float(getattr(job, "VIDEO_WIDTH", 720)) / max(float(getattr(job, "VIDEO_HEIGHT", 1280)), 1.0)
+    source_ratio = width / max(height, 1)
+    orientation_score = max(0, 12 - int(abs(source_ratio - target_ratio) * 12))
+    resolution_score = min(12, int(min(width, height) / 180))
+    duration_score = min(4, int(float(duration or 0) / 8))
+    return orientation_score + resolution_score + duration_score
+
 def download_file_with_retry(url, path, max_attempts=2):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     delay = 0.5
@@ -77,18 +100,35 @@ def search_pinterest_images(query):
         print(f"Scraping Pinterest failed: {e}")
         return []
 
+
+def _report_media_event(job: GenerationJob, message: str) -> None:
+    """Record provider-level media activity for the dashboard's live terminal."""
+    history_store = getattr(job, "history_store", None)
+    if not history_store:
+        return
+    try:
+        history_store.update_progress(job.job_id, "media", 50, message)
+    except Exception as error:
+        print(f"Job history warning: {error}")
+
+
 def download_clip_for_query(query, index, job: GenerationJob):
     # Check if clip (video or image) already exists
     for ext in [".mp4", ".jpg", ".png"]:
         path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{index}{ext}")
         if os.path.exists(path):
             print(f"Clip {index} already exists as {ext}. Skipping download.")
+            _report_media_event(job, f"Visual {index}: using an existing local {ext[1:].upper()} asset.")
             return True
 
     save_path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{index}.mp4")
 
     providers = []
-    allowed = getattr(job, "ALLOWED_SOURCES", ["pexels", "pixabay", "google", "pinterest", "wikimedia_image"])
+    allowed = list(getattr(job, "ALLOWED_SOURCES", ["pexels", "pixabay", "google", "wikimedia_image"]))
+    blocked_sources = sorted(set(allowed) & BLOCKED_MEDIA_SOURCES)
+    if blocked_sources:
+        print(f"Skipping blocked media source(s): {', '.join(blocked_sources)}")
+        allowed = [source for source in allowed if source not in BLOCKED_MEDIA_SOURCES]
     
     if job.MEDIA_PREFERENCE in ["mixed", "videos"]:
         if "storyblocks" in allowed and getattr(job, "STORYBLOCKS_PUBLIC_KEY", None) and getattr(job, "STORYBLOCKS_PRIVATE_KEY", None):
@@ -112,10 +152,21 @@ def download_clip_for_query(query, index, job: GenerationJob):
         if "unsplash" in allowed:
             providers.append("unsplash")
         
-    # Shuffle providers to ensure massive variety in every video!
-    random.shuffle(providers)
+    # Prefer configured licensed/API sources before scraped image providers.
     
     for provider in providers:
+        provider_label = {
+            "storyblocks": "Storyblocks",
+            "pexels": "Pexels",
+            "pixabay": "Pixabay",
+            "google": "Google/Bing Images",
+            "pinterest": "Pinterest",
+            "wikimedia_image": "Wikimedia Commons",
+            "nasa_image": "NASA Images",
+            "unsplash": "Unsplash",
+            "archive": "Internet Archive",
+        }.get(provider, provider.title())
+        _report_media_event(job, f"Visual {index}: searching {provider_label} for '{query}'.")
         if provider == "storyblocks":
             print(f"Searching Storyblocks for '{query}'...")
             try:
@@ -139,6 +190,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                         if preview_url and download_file_with_retry(preview_url, save_path):
                             job.DOWNLOADED_VIDEO_IDS.add(str(item.get('id')))
                             job.VIDEO_ATTRIBUTIONS.append(f"Storyblocks Video: {item.get('title')} (ID: {item.get('id')})")
+                            _report_media_event(job, f"Visual {index}: Storyblocks video downloaded.")
                             return True
             except Exception as e:
                 print(f"Storyblocks query failed: {e}")
@@ -157,20 +209,22 @@ def download_clip_for_query(query, index, job: GenerationJob):
                         v_dur = v.get("duration", 0)
                         width = v.get("width", 1)
                         height = v.get("height", 1)
-                        if v_id in job.DOWNLOADED_VIDEO_IDS or v_dur < 5:
+                        score = media_quality_score(width, height, job, v_dur)
+                        if v_id in job.DOWNLOADED_VIDEO_IDS or v_dur < 5 or score < 0:
                             continue
-                        score = 10 if width < height else (5 if width == height else 2)
                         candidates.append((score, v))
                     if candidates:
                         candidates.sort(key=lambda x: x[0], reverse=True)
                         selected_score, selected_v = random.choice(candidates[:min(3, len(candidates))])
                         video_files = selected_v.get("video_files", [])
+                        video_files = [vf for vf in video_files if media_quality_score(vf.get("width"), vf.get("height"), job, selected_v.get("duration", 0)) >= 0]
                         link = next((vf.get("link") for vf in video_files if vf.get("width") in [720, 1080]), None)
                         if not link and video_files: link = video_files[0].get("link")
                         if link and download_file_with_retry(link, save_path):
                             job.DOWNLOADED_VIDEO_IDS.add(str(selected_v.get("id")))
                             user_info = selected_v.get("user", {})
                             job.VIDEO_ATTRIBUTIONS.append(f"Pexels Video by {user_info.get('name', 'Unknown')} ({selected_v.get('url', '')})")
+                            _report_media_event(job, f"Visual {index}: Pexels video downloaded.")
                             return True
             except Exception as e:
                 print(f"Pexels query failed: {e}")
@@ -183,14 +237,19 @@ def download_clip_for_query(query, index, job: GenerationJob):
                 if r.status_code == 200:
                     hits = r.json().get("hits", [])
                     candidates = [h for h in hits if str(h.get("id")) not in job.DOWNLOADED_VIDEO_IDS and h.get("duration", 0) >= 5]
+                    candidates = [h for h in candidates if any(media_quality_score(v.get("width"), v.get("height"), job, h.get("duration", 0)) >= 0 for v in h.get("videos", {}).values())]
                     if candidates:
+                        candidates.sort(key=lambda h: max(media_quality_score(v.get("width"), v.get("height"), job, h.get("duration", 0)) for v in h.get("videos", {}).values()), reverse=True)
                         selected_h = random.choice(candidates[:min(3, len(candidates))])
                         videos = selected_h.get("videos", {})
-                        video_obj = videos.get("medium") or videos.get("large") or videos.get("tiny")
+                        candidates_by_quality = [v for v in videos.values() if media_quality_score(v.get("width"), v.get("height"), job, selected_h.get("duration", 0)) >= 0]
+                        candidates_by_quality.sort(key=lambda v: media_quality_score(v.get("width"), v.get("height"), job, selected_h.get("duration", 0)), reverse=True)
+                        video_obj = candidates_by_quality[0] if candidates_by_quality else None
                         link = video_obj.get("url") if video_obj else None
                         if link and download_file_with_retry(link, save_path):
                             job.DOWNLOADED_VIDEO_IDS.add(str(selected_h.get("id")))
                             job.VIDEO_ATTRIBUTIONS.append(f"Pixabay Video by {selected_h.get('user', 'Unknown')} (ID: {selected_h.get('id')})")
+                            _report_media_event(job, f"Visual {index}: Pixabay video downloaded.")
                             return True
             except Exception as e:
                 print(f"Pixabay query failed: {e}")
@@ -207,6 +266,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                     if download_file_with_retry(selected_url, img_save_path):
                         job.DOWNLOADED_VIDEO_IDS.add(selected_url)
                         job.VIDEO_ATTRIBUTIONS.append(f"Google/Bing Image: {selected_url[:80]}...")
+                        _report_media_event(job, f"Visual {index}: Google/Bing image downloaded.")
                         return True
             except Exception as e:
                 print(f"Google/Bing Image query failed: {e}")
@@ -223,6 +283,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                     if download_file_with_retry(selected_url, img_save_path):
                         job.DOWNLOADED_VIDEO_IDS.add(selected_url)
                         job.VIDEO_ATTRIBUTIONS.append(f"Pinterest Image: {selected_url[:80]}...")
+                        _report_media_event(job, f"Visual {index}: Pinterest image downloaded.")
                         return True
             except Exception as e:
                 print(f"Pinterest query failed: {e}")
@@ -246,6 +307,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                             if download_file_with_retry(img_url, img_save_path):
                                 job.DOWNLOADED_VIDEO_IDS.add(img_url)
                                 job.VIDEO_ATTRIBUTIONS.append(f"Wikimedia Commons Image: {page_data.get('title', '')}")
+                                _report_media_event(job, f"Visual {index}: Wikimedia Commons image downloaded.")
                                 return True
             except Exception as e:
                 print(f"Wikimedia Image query failed: {e}")
@@ -270,6 +332,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                                 job.DOWNLOADED_VIDEO_IDS.add(img_url)
                                 author = item.get("user", {}).get("name", "Unknown")
                                 job.VIDEO_ATTRIBUTIONS.append(f"Unsplash Image by {author}")
+                                _report_media_event(job, f"Visual {index}: Unsplash image downloaded.")
                                 return True
                 except Exception as e:
                     print(f"Unsplash query failed: {e}")
@@ -294,6 +357,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                             if download_file_with_retry(img_url, img_save_path):
                                 job.DOWNLOADED_VIDEO_IDS.add(img_url)
                                 job.VIDEO_ATTRIBUTIONS.append(f"NASA Image")
+                                _report_media_event(job, f"Visual {index}: NASA image downloaded.")
                                 return True
             except Exception as e:
                 print(f"NASA Image query failed: {e}")
@@ -319,6 +383,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                             if download_file_with_retry(video_url, save_path):
                                 job.DOWNLOADED_VIDEO_IDS.add(video_url)
                                 job.VIDEO_ATTRIBUTIONS.append(f"Internet Archive Video: {doc.get('title', 'Unknown')}")
+                                _report_media_event(job, f"Visual {index}: Internet Archive video downloaded.")
                                 return True
             except Exception as e:
                 print(f"Internet Archive query failed: {e}")

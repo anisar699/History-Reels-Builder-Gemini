@@ -1,8 +1,8 @@
 import os
 import sys
-import shutil
 import argparse
 import random
+import shutil
 import requests
 
 try:
@@ -11,12 +11,16 @@ try:
 except Exception:
     pass
 from history_reels import config
+from history_reels.font_manager import is_usable_font, prepare_caption_font
+from history_reels.music_library import ensure_local_music_track
 from history_reels.jobs import GenerationJob, create_generation_job
+from history_reels.job_store import JobCancelledError, JobStore
 from history_reels.script_generator import fetch_ai_script
 from history_reels.stock_media import download_clip_for_query
 from history_reels.voiceover import generate_voiceover
 from history_reels.renderer import build_video_frames, run_ffmpeg
 from history_reels.seo import write_seo_package
+from history_reels.verification import verify_deliverable
 
 def download_file(url, path):
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -29,75 +33,48 @@ def download_file(url, path):
 
 def ensure_assets(job: GenerationJob):
     # Make sure target directories exist
-    os.makedirs(os.path.dirname(job.FONT_PATH), exist_ok=True)
+    os.makedirs(job.ASSETS_DIR, exist_ok=True)
     os.makedirs(job.MUSIC_DIR, exist_ok=True)
     
-    # 1. Ensure Urdu Font exists
-    font_name = getattr(job, "URDU_FONT_NAME", "Jameel Noori Nastaleeq")
-    job.FONT_PATH = os.path.join(job.ASSETS_DIR, f"{font_name}.ttf")
-    
-    if not os.path.exists(job.FONT_PATH):
-        print(f"Urdu Font '{font_name}' not found at {job.FONT_PATH}. Auto-downloading...")
-        font_urls = {
-            "Noto Nastaliq Urdu": "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoNastaliqUrdu/NotoNastaliqUrdu-Bold.ttf",
-            "Jameel Noori Nastaleeq": "https://raw.githubusercontent.com/abid-mujtaba/ttf-jameel-noori-nastaleeq/master/Jameel%20Noori%20Nastaleeq.ttf"
-        }
-        font_url = font_urls.get(font_name, font_urls["Jameel Noori Nastaleeq"])
-        try:
-            download_file(font_url, job.FONT_PATH)
-            print(f"Successfully downloaded {font_name} Font!")
-        except Exception as e:
-            print(f"Failed to download Urdu font: {e}")
-    # 2. Ensure Background Music pool exists
-    track_name = f"{job.BG_MUSIC_VIBE}_{job.BG_MUSIC_TRACK_INDEX}"
-    target_music_path = os.path.join(job.MUSIC_DIR, f"{track_name}.mp3")
-    
-    if not os.path.exists(target_music_path):
-        print(f"Background music track '{track_name}.mp3' not found. Auto-downloading...")
-        music_urls = {
-            f"{vibe}_{i}": f"https://archive.org/download/ambient-cinematic-music-royalty-free/Cinematic_Ambient_Music_{i}.mp3"
-            for vibe in ["mystery", "epic", "sad", "ancient"] for i in range(1, 6)
-        }
-        download_url = music_urls.get(track_name)
-        if download_url:
-            try:
-                download_file(download_url, target_music_path)
-                print(f"Successfully downloaded background music: {track_name}.mp3")
-            except Exception as e:
-                print(f"Failed to download music track: {e}")
-        
-        # If download failed or no URL was available for this vibe, generate silent fallback
-        if not os.path.exists(target_music_path):
-            print(f"Generating silent fallback music for {track_name} to prevent crashes...")
-            try:
-                import subprocess
-                subprocess.run([
-                    "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-                    "-t", "60", "-q:a", "9", "-acodec", "libmp3lame", target_music_path
-                ], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception as ex:
-                print(f"Failed to generate silent fallback: {ex}")
+    # 1. Resolve the selected language font. A valid uploaded custom font is
+    # preserved instead of being overwritten by a default font path.
+    prepare_caption_font(job, download_file)
+    # 2. Provision the selected reusable local original track.
+    ensure_local_music_track(job)
 
 def check_inputs(job: GenerationJob):
     os.makedirs(job.TOPIC_TEMP_DIR, exist_ok=True)
     os.makedirs(job.OUTPUT_DIR, exist_ok=True)
+
+    captions = list(getattr(job, "CAPTIONS", []) or [])
+    narrations = list(getattr(job, "NARRATIONS", []) or [])
+    if not captions:
+        captions = [getattr(job, f"CAPTION_TEXT_{index}", "") for index in range(1, 5)]
+    if not narrations:
+        narrations = [getattr(job, f"NARRATION_TEXT_{index}", "") for index in range(1, 5)]
+    captions = [str(value).strip() for value in captions if str(value).strip()]
+    narrations = [str(value).strip() for value in narrations if str(value).strip()]
+    queries = [str(value).strip() for value in (getattr(job, "QUERIES", []) or []) if str(value).strip()]
+    if not captions or not narrations or not queries:
+        print("Error: At least one caption, narration, and media query is required.")
+        return False
+    if len(captions) != len(narrations):
+        print("Error: Captions and narrations must contain the same number of slides.")
+        return False
+    job.CAPTIONS = captions
+    job.NARRATIONS = narrations
+    job.QUERIES = queries
     
     ensure_assets(job)
     
-    if not os.path.exists(job.FONT_PATH):
-        print(f"Error: Urdu Font not found at {job.FONT_PATH}")
+    if not is_usable_font(job.FONT_PATH):
+        print(f"Error: Caption font not found or invalid at {job.FONT_PATH}")
         return False
         
     music_mp3 = os.path.join(job.MUSIC_DIR, f"{job.BG_MUSIC_VIBE}_{job.BG_MUSIC_TRACK_INDEX}.mp3")
     if not os.path.exists(music_mp3):
-        existing_tracks = [f for f in os.listdir(job.MUSIC_DIR) if f.endswith(".mp3")]
-        if existing_tracks:
-            fallback_track = os.path.join(job.MUSIC_DIR, existing_tracks[0])
-            print(f"Warning: Selected music track not found. Using fallback: {existing_tracks[0]}")
-            shutil.copy2(fallback_track, music_mp3)
-        else:
-            print(f"Error: Music file {music_mp3} not found and no fallbacks available!")
-            return False
+        print("Error: Local background music track could not be created.")
+        return False
 
     return True
 
@@ -121,6 +98,16 @@ def download_visuals(job: GenerationJob, voice_dur):
             clip_idx += 1
         else:
             print(f"Warning: Could not retrieve video clip for query '{q}'")
+    if not successful_queries:
+        raise RuntimeError(
+            "No usable media could be downloaded from the selected sources. "
+            "Check media-source keys or choose another source profile and retry."
+        )
+    if len(successful_queries) < required_clips:
+        print(
+            f"Warning: Retrieved {len(successful_queries)}/{required_clips} media assets. "
+            "The renderer will reuse valid assets instead of producing blank frames."
+        )
     job.QUERIES = successful_queries
 
 def copy_deliverables(job: GenerationJob):
@@ -135,6 +122,8 @@ def copy_deliverables(job: GenerationJob):
     if not os.path.exists(src_video):
         print(f"Error: output.mp4 not found in {job.TOPIC_TEMP_DIR}. Pipeline may have failed.")
         return False
+    if not os.path.exists(src_txt):
+        raise FileNotFoundError("SEO package was not created; final deliverables were not copied.")
     
     import subprocess
     intro_path = getattr(job, "INTRO_BUMPER", None)
@@ -183,7 +172,10 @@ def copy_deliverables(job: GenerationJob):
         
     if os.path.exists(src_txt):
         shutil.copy2(src_txt, final_txt)
+    if not os.path.exists(final_video) or not os.path.exists(final_txt):
+        raise RuntimeError("Final deliverables could not be copied to the output folder.")
     print("Deliverables copied.")
+    return True
 
 def cleanup(job: GenerationJob):
     print("Cleaning up temporary topic files...")
@@ -194,15 +186,84 @@ def cleanup(job: GenerationJob):
         except Exception as e:
             print(f"Cleanup warning: {e}")
 
+
+def _job_request(job, topic, provider, manual_script_data, is_raw_script):
+    if isinstance(topic, dict):
+        label = topic.get("title") or topic.get("link") or "Imported article"
+    elif isinstance(topic, str) and topic.strip():
+        label = topic.strip()
+    elif manual_script_data:
+        label = manual_script_data.get("title", "Manual script")
+    else:
+        label = "Universal creator demo"
+    return {
+        "label": str(label)[:500],
+        "provider": provider,
+        "is_raw_script": bool(is_raw_script),
+        "manual_script_data": manual_script_data,
+        "topic": topic,
+        "retry_of": getattr(job, "RETRY_OF", ""),
+    }
+
+
+def _start_job_lifecycle(job: GenerationJob, request):
+    """Persist a local lifecycle record without storing API credentials."""
+    try:
+        if not job.history_store:
+            job.history_store = JobStore(job.OUTPUT_DIR)
+            job.history_store.create_job(job, request)
+        job.history_store.mark_running(job.job_id)
+        job.status = "running"
+        _report_job(job, "starting", 1, "Preparing isolated job workspace.")
+    except Exception as error:
+        # A history write failure should not make an otherwise valid local
+        # render unusable; surface it in logs and continue without persistence.
+        job.history_store = None
+        print(f"Job history warning: {error}")
+
+
+def _finish_job(job: GenerationJob, status: str, error_message: str = ""):
+    job.status = status
+    if not job.history_store:
+        return
+    try:
+        if status == "succeeded":
+            job.history_store.mark_succeeded(job)
+        elif status == "cancelled":
+            job.history_store.mark_cancelled(job, error_message)
+        else:
+            job.history_store.mark_failed(job, error_message)
+    except Exception as error:
+        print(f"Job history warning: {error}")
+
+
+def _report_job(job: GenerationJob, stage: str, progress: int, message: str):
+    job.current_stage = stage
+    job.progress = progress
+    print(f"[{progress:03d}%] {stage}: {message}")
+    if job.history_store:
+        try:
+            job.history_store.update_progress(job.job_id, stage, progress, message)
+        except Exception as error:
+            print(f"Job history warning: {error}")
+
+
+def _check_cancellation(job: GenerationJob):
+    if job.history_store and job.history_store.cancellation_requested(job.job_id):
+        raise JobCancelledError("Generation cancelled at a safe pipeline checkpoint.")
+
 def generate_video_for_topic(topic, provider="gemini", manual_script_data=None, is_raw_script=False, job=None):
     """Generate one reel using only the supplied job's state and workspace."""
     job = job or create_generation_job(config)
     job.reset_runtime_state()
+    _start_job_lifecycle(job, _job_request(job, topic, provider, manual_script_data, is_raw_script))
     try:
+        _report_job(job, "workspace", 5, "Creating isolated workspace.")
         job.prepare_workspace()
     except FileExistsError:
         job.last_error = f"Job workspace already exists: {job.TOPIC_TEMP_DIR}"
         print(job.last_error)
+        _finish_job(job, "failed", job.last_error)
         return False
 
     is_valid_topic = False
@@ -214,6 +275,7 @@ def generate_video_for_topic(topic, provider="gemini", manual_script_data=None, 
     if is_valid_topic or manual_script_data:
         print(f"\n--- Generating Video (Manual/API Mode) ---")
         try:
+            _report_job(job, "script", 12, "Preparing script configuration.")
             if manual_script_data:
                 print("Using manually entered script configuration...")
                 from history_reels.script_generator import ScriptConfig
@@ -223,6 +285,7 @@ def generate_video_for_topic(topic, provider="gemini", manual_script_data=None, 
                 except Exception as e:
                     print(f"Error: Invalid manual script data - {e}")
                     job.last_error = f"Validation Error: {e}"
+                    _finish_job(job, "failed", job.last_error)
                     return False
             elif isinstance(topic, dict):
                 print(f"Processing scraped article/news topic...")
@@ -244,41 +307,67 @@ def generate_video_for_topic(topic, provider="gemini", manual_script_data=None, 
             print(f"Job: {job.job_id}")
             print(f"Title: {job.TOPIC_TITLE} ({job.TOPIC_YEAR})")
             print(f"Music Vibe: {job.BG_MUSIC_VIBE} (Track #{job.BG_MUSIC_TRACK_INDEX})")
+            print(f"AI Music Suggestion: {job.AI_SUGGESTED_MUSIC_VIBE} (dashboard selection preserved)")
             print(f"Video Search Queries: {job.QUERIES}")
             print("====================================\n")
         except Exception as e:
             err_msg = f"Error fetching AI script: {e}"
             print(f"Error fetching AI script, skipping topic '{topic}'. Error: {e}")
             job.last_error = err_msg
+            _finish_job(job, "failed", err_msg)
             return False
     else:
-        print("\n--- Running Fallback Mode (Baghdad Battery) ---")
-        job.TOPIC_TITLE = "Baghdad Battery"
-        job.TOPIC_YEAR = "250 BC"
-        job.OUTPUT_NAME = f"Baghdad Battery 250 BC Asad Voice {job.short_id}"
-        job.QUERIES = ["ancient mesopotamia", "parthian empire", "ancient battery", "archaeology discovery", "ancient electricity", "clay jar", "copper cylinder", "iron rod"]
+        print("\n--- Running Fallback Mode (Universal Creator Demo) ---")
+        _report_job(job, "script", 12, "Preparing fallback script configuration.")
+        job.TOPIC_TITLE = "Universal Creator Demo"
+        job.TOPIC_YEAR = "Demo"
+        job.OUTPUT_NAME = job.build_output_name()
+        job.QUERIES = ["creative workspace", "smartphone video creation", "social media content", "ideas notebook", "studio lights", "editing timeline", "audience engagement", "creator success"]
         
     try:
+        _report_job(job, "validation", 20, "Validating local render inputs.")
+        _check_cancellation(job)
         if not check_inputs(job):
             err_msg = "Input validation failed. Please ensure all required API keys are configured and local audio assets are downloaded."
             print("check_inputs failed. Skipping.")
             job.last_error = err_msg
+            _finish_job(job, "failed", err_msg)
             return False
             
+        _report_job(job, "voice", 35, "Generating voiceover.")
         voice_dur = generate_voiceover(job)
+        _check_cancellation(job)
+        _report_job(job, "media", 50, "Downloading source media.")
         download_visuals(job, voice_dur)
+        _check_cancellation(job)
         
+        _report_job(job, "frames", 65, "Building video frames.")
         build_video_frames(job, voice_dur)
+        _check_cancellation(job)
+        _report_job(job, "render", 80, "Rendering final video.")
         run_ffmpeg(job, voice_dur)
+        _check_cancellation(job)
+        _report_job(job, "seo", 90, "Writing SEO package.")
         write_seo_package(job)
+        _report_job(job, "deliver", 95, "Copying deliverables.")
         copy_deliverables(job)
+        _report_job(job, "verify", 97, "Verifying final video and SEO deliverables.")
+        verify_deliverable(job)
         cleanup(job)
+        _finish_job(job, "succeeded")
         print(f"SUCCESS! Created video: {job.OUTPUT_NAME}.mp4")
         return True
+    except JobCancelledError as error:
+        job.last_error = str(error)
+        print(job.last_error)
+        _finish_job(job, "cancelled", job.last_error)
+        cleanup(job)
+        return False
     except Exception as e:
         err_msg = f"Failed to generate video for topic. Error: {e}"
         print(err_msg)
         job.last_error = err_msg
+        _finish_job(job, "failed", err_msg)
         try:
             cleanup(job)
         except Exception:
@@ -316,32 +405,33 @@ def main():
         print(f"Loaded {len(df)} rows from file. Starting batch generation...")
         for idx, row in df.iterrows():
             row_dict = {k.lower(): v for k, v in row.to_dict().items()}
+            def safe_str(value):
+                if pd.isna(value):
+                    return ""
+                return str(value).strip()
+
             if has_script_cols:
-                queries_val = row_dict.get("queries", "")
-                if pd.isna(queries_val):
-                    queries_val = ""
+                queries_val = safe_str(row_dict.get("queries", ""))
                 queries_list = [q.strip() for q in str(queries_val).split(",") if q.strip()]
                 while len(queries_list) < 8:
-                    queries_list.append("history")
+                    queries_list.append("general visual storytelling")
                 queries_list = queries_list[:8]
+                captions = [safe_str(row_dict.get(f"caption_text_{i}", "")) for i in range(1, 21)]
+                narrations = [safe_str(row_dict.get(f"narration_text_{i}", "")) for i in range(1, 21)]
+                captions = [value for value in captions if value]
+                narrations = [value for value in narrations if value]
                 
                 script_data = {
-                    "title": str(row_dict.get("title", "")).strip(),
-                    "year": str(row_dict.get("year", "Unknown")).strip(),
-                    "bg_music_vibe": str(row_dict.get("bg_music_vibe", "mystery")).strip(),
-                    "caption_text_1": str(row_dict.get("caption_text_1", "")).strip(),
-                    "caption_text_2": str(row_dict.get("caption_text_2", "")).strip(),
-                    "caption_text_3": str(row_dict.get("caption_text_3", "")).strip(),
-                    "caption_text_4": str(row_dict.get("caption_text_4", "")).strip(),
-                    "narration_text_1": str(row_dict.get("narration_text_1", "")).strip(),
-                    "narration_text_2": str(row_dict.get("narration_text_2", "")).strip(),
-                    "narration_text_3": str(row_dict.get("narration_text_3", "")).strip(),
-                    "narration_text_4": str(row_dict.get("narration_text_4", "")).strip(),
+                    "title": safe_str(row_dict.get("title", "")),
+                    "year": safe_str(row_dict.get("year", "Unknown")),
+                    "bg_music_vibe": safe_str(row_dict.get("bg_music_vibe", "mystery")),
+                    "captions": captions,
+                    "narrations": narrations,
                     "queries": queries_list,
-                    "seo_title": str(row_dict.get("seo_title", f"{row_dict.get('title', '')} — Secrets of the Past 🏺✨")).strip(),
-                    "seo_description": str(row_dict.get("seo_description", "")).strip(),
-                    "seo_hashtags": str(row_dict.get("seo_hashtags", "#History #Urdu")).strip(),
-                    "seo_short_caption": str(row_dict.get("seo_short_caption", "")).strip()
+                    "seo_title": safe_str(row_dict.get("seo_title", f"{safe_str(row_dict.get('title', ''))} — Watch This ✨")),
+                    "seo_description": safe_str(row_dict.get("seo_description", "")),
+                    "seo_hashtags": safe_str(row_dict.get("seo_hashtags", "#Reels #ShortVideos #ContentCreator")),
+                    "seo_short_caption": safe_str(row_dict.get("seo_short_caption", ""))
                 }
                 print(f"\nProcessing manual script row {idx+1}/{len(df)}: '{script_data['title']}'")
                 generate_video_for_topic(None, provider=provider, manual_script_data=script_data)
@@ -354,11 +444,9 @@ def main():
                 if not topic_col:
                     topic_col = df.columns[0].lower()
                 
-                def safe_str(val):
-                    if pd.isna(val): return ""
-                    return str(val).strip()
                 topic_val = safe_str(row_dict.get(topic_col))
-                if not topic_val or topic_val.lower() == "nan": continue
+                if not topic_val or topic_val.lower() == "nan":
+                    continue
                 
                 print(f"\nProcessing topic row {idx+1}/{len(df)}: '{topic_val}'")
                 generate_video_for_topic(topic_val, provider=provider)
@@ -405,23 +493,23 @@ def main():
     else:
         # Interactive mode
         print("="*60)
-        print("         WELCOME TO HISTORY REELS BUILDER AUTO-PILOT")
+        print("         WELCOME TO AI REELS STUDIO")
         print("="*60)
         print("Select Generation Mode:")
         print("1. Single Video Generation")
         print("2. Batch Video Generation (Multiple Topics)")
-        print("3. Run Fallback Mode (Baghdad Battery Demo)")
+        print("3. Run Fallback Mode (Universal Creator Demo)")
         
         choice = input("Enter choice (1-3): ").strip()
         
         if choice == "1":
-            topic = input("Enter the topic for your video (e.g. Titanic): ").strip()
+            topic = input("Enter the topic for your video (e.g. 5 productivity tips): ").strip()
             if topic == "":
                 print("Error: Topic cannot be empty.")
                 sys.exit(1)
             generate_video_for_topic(topic, provider=provider)
         elif choice == "2":
-            print("\nEnter multiple topics separated by commas (e.g. Taj Mahal, Pyramids, Titanic):")
+            print("\nEnter multiple topics separated by commas (e.g. study tips, home workout, travel guide):")
             topics_input = input("Topics: ").strip()
             if topics_input == "":
                 print("Error: Topics list cannot be empty.")

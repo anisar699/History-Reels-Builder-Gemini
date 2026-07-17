@@ -32,6 +32,10 @@ class GenerationJob:
     values: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     last_error: str = ""
+    history_store: Any = field(default=None, repr=False)
+    status: str = "queued"
+    progress: int = 0
+    current_stage: str = "queued"
 
     def __getattr__(self, name: str) -> Any:
         try:
@@ -40,7 +44,7 @@ class GenerationJob:
             raise AttributeError(name) from exc
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if name in {"job_id", "workspace", "values", "created_at", "last_error"}:
+        if name in {"job_id", "workspace", "values", "created_at", "last_error", "history_store", "status", "progress", "current_stage"}:
             object.__setattr__(self, name, value)
         else:
             self.values[name] = value
@@ -68,17 +72,33 @@ class GenerationJob:
         self.NUM_CLIPS = 0
         self.last_error = ""
 
+    def voice_label(self) -> str:
+        """Return a readable, filesystem-safe label for this job's narrator."""
+        if str(getattr(self, "VOICE_PROVIDER", "edge-tts")).lower() == "elevenlabs":
+            return "ElevenLabs Voice"
+
+        voice_id = str(getattr(self, "VOICE_ID", "")).strip()
+        voice_name = voice_id.rsplit("-", 1)[-1]
+        voice_name = re.sub(r"Neural$", "", voice_name, flags=re.IGNORECASE)
+        voice_name = _safe_component(voice_name, "Edge TTS")
+        return f"{voice_name} Voice"
+
+    def build_output_name(self) -> str:
+        """Build a collision-resistant name from the job's actual settings."""
+        clean_title = _safe_component(self.TOPIC_TITLE, "reel")
+        clean_year = _safe_component(self.TOPIC_YEAR, "general")
+        return f"{clean_title} {clean_year} {self.voice_label()} {self.short_id}"
+
     def apply_script(self, ai_data: dict[str, Any], track_index: int) -> None:
         self.TOPIC_TITLE = ai_data["title"]
         self.TOPIC_YEAR = ai_data["year"]
-        self.BG_MUSIC_VIBE = ai_data["bg_music_vibe"]
+        # The dashboard's selected vibe is part of the job snapshot. Keep it
+        # authoritative while retaining the model's suggestion for diagnostics.
+        self.AI_SUGGESTED_MUSIC_VIBE = ai_data.get("bg_music_vibe", "mystery")
         self.BG_MUSIC_TRACK_INDEX = track_index
-
-        clean_title = _safe_component(self.TOPIC_TITLE, "history_reel")
-        clean_year = _safe_component(self.TOPIC_YEAR, "history")
         # The job suffix prevents two simultaneous renders from overwriting a
         # deliverable that has the same title and year.
-        self.OUTPUT_NAME = f"{clean_title} {clean_year} Asad Voice {self.short_id}"
+        self.OUTPUT_NAME = self.build_output_name()
 
         self.CAPTIONS = ai_data.get("captions", [])
         self.NARRATIONS = ai_data.get("narrations", [])
@@ -91,7 +111,7 @@ class GenerationJob:
         self.QUERIES = list(ai_data["queries"])
         self.SEO_TITLE = ai_data.get("seo_title", f"{self.TOPIC_TITLE} ({self.TOPIC_YEAR})")
         self.SEO_DESCRIPTION = ai_data.get("seo_description", self.FULL_SPEECH_TEXT)
-        self.SEO_HASHTAGS = ai_data.get("seo_hashtags", "#History #UrduMysteries")
+        self.SEO_HASHTAGS = ai_data.get("seo_hashtags", "#Reels #ShortVideos #ContentCreator")
         self.SEO_SHORT_CAPTION = ai_data.get("seo_short_caption", self.FULL_SPEECH_TEXT[:100])
 
 
@@ -116,3 +136,18 @@ def create_generation_job(runtime_config: Any) -> GenerationJob:
     values["VIDEO_ATTRIBUTIONS"] = []
     values["TRANSITION_OFFSETS"] = []
     return GenerationJob(job_id=job_id, workspace=workspace, values=values)
+
+
+def create_retry_job(previous_job: GenerationJob) -> GenerationJob:
+    """Clone a job's safe runtime snapshot into a fresh retry workspace."""
+    values = copy.deepcopy(previous_job.values)
+    job_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    workspace = os.path.join(values["TEMP_DIR"], "jobs", job_id)
+    values["TOPIC_TEMP_DIR"] = workspace
+    values["SLIDE_TIMINGS"] = []
+    values["DOWNLOADED_VIDEO_IDS"] = set()
+    values["VIDEO_ATTRIBUTIONS"] = []
+    values["TRANSITION_OFFSETS"] = []
+    retry = GenerationJob(job_id=job_id, workspace=workspace, values=values)
+    retry.RETRY_OF = previous_job.job_id
+    return retry

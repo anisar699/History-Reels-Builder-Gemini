@@ -1,14 +1,188 @@
 import os
-import sys
 import glob
+import hashlib
 import random
-import contextlib
-import importlib
+from datetime import datetime
 import streamlit as st
 
 from history_reels import config
-from history_reels.cli import generate_video_for_topic
+from history_reels.font_manager import font_family_from_file, font_options_for_language, get_font_preset
 from history_reels.jobs import create_generation_job
+from history_reels.job_manager import get_job_manager
+from history_reels.job_store import JobStore
+from history_reels.input_validation import validate_external_url, validate_uploaded_file
+from history_reels.security import require_dashboard_auth, save_local_env_values
+from history_reels.voiceover import filter_voices_for_language
+
+
+WORKFLOW_STAGES = [
+    ("queued", "Queued"),
+    ("starting", "Starting"),
+    ("script", "Script"),
+    ("validation", "Validation"),
+    ("voice", "Voice"),
+    ("media", "Media"),
+    ("frames", "Frames"),
+    ("render", "Render"),
+    ("seo", "SEO"),
+    ("deliver", "Deliver"),
+    ("verify", "Verify"),
+    ("completed", "Complete"),
+]
+
+
+def _workflow_label(stage: str) -> str:
+    normalized = str(stage or "queued").lower()
+    return dict(WORKFLOW_STAGES).get(normalized, normalized.replace("_", " ").title())
+
+
+def _format_file_size(size_bytes: int) -> str:
+    """Return a compact, friendly file-size label for deliverables."""
+    size = float(size_bytes or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} {unit}"
+        size /= 1024
+    return "—"
+
+
+def _status_badge(status: str) -> str:
+    status = str(status or "queued").lower()
+    labels = {
+        "queued": "🟡 Queued",
+        "running": "🔵 Rendering",
+        "succeeded": "🟢 Ready",
+        "failed": "🔴 Needs attention",
+        "cancelled": "⚪ Cancelled",
+    }
+    return labels.get(status, f"⚪ {status.title()}")
+
+
+@st.fragment(run_every=2)
+def render_live_generation_status(output_dir: str) -> None:
+    """Show durable render progress and its live event terminal on the Generate tab."""
+    job_store = JobStore(output_dir)
+    recent_jobs = job_store.list_jobs(limit=25)
+    live_jobs = [
+        record for record in recent_jobs
+        if record.get("status") in {"queued", "running"}
+    ]
+
+    st.markdown("### Studio render status")
+    status_tab, terminal_tab = st.tabs(["Live progress", "Terminal"])
+
+    with status_tab:
+        if not live_jobs:
+            st.info("No active render right now. Start a video to see its live progress here.")
+        else:
+            st.caption("Your video keeps rendering in the background. You can safely continue configuring the dashboard.")
+            for record in live_jobs:
+                stage = str(record.get("current_stage") or "queued").lower()
+                progress = max(0, min(100, int(record.get("progress") or 0)))
+                events = job_store.list_events(record["job_id"], limit=1)
+                message = events[0]["message"] if events else "Waiting for the next pipeline step."
+                st.markdown(f"**{record.get('topic', 'Untitled reel')}** · {_status_badge(record.get('status'))}")
+                st.progress(progress, text=f"{_workflow_label(stage)} — {progress}% · {message}")
+
+                current_index = next((index for index, (name, _) in enumerate(WORKFLOW_STAGES) if name == stage), 0)
+                workflow = []
+                for index, (_, label) in enumerate(WORKFLOW_STAGES):
+                    icon = "✅" if index < current_index else "🔄" if index == current_index else "○"
+                    workflow.append(f"{icon} {label}")
+                st.caption(" → ".join(workflow))
+
+    with terminal_tab:
+        terminal_jobs = live_jobs or recent_jobs[:1]
+        if not terminal_jobs:
+            st.caption("The live terminal will show every generation step after you start a video.")
+        else:
+            job_by_id = {record["job_id"]: record for record in terminal_jobs}
+            selected_job_id = st.selectbox(
+                "Render job",
+                options=list(job_by_id),
+                format_func=lambda job_id: (
+                    f"{job_by_id[job_id].get('topic', 'Untitled video')} · "
+                    f"{_status_badge(job_by_id[job_id].get('status'))}"
+                ),
+                key="live_render_terminal_job",
+            )
+            events = job_store.list_events(selected_job_id, limit=100)
+            if not events:
+                st.caption("Waiting for the worker to write its first event…")
+            else:
+                terminal_lines = []
+                for event in events:
+                    timestamp = str(event.get("created_at") or "").replace("T", " ")[:19]
+                    progress = event.get("progress")
+                    progress_label = f" {int(progress):03d}%" if progress is not None else ""
+                    stage = str(event.get("stage") or "system").upper()
+                    terminal_lines.append(f"[{timestamp}]{progress_label} {stage:<10} {event.get('message', '')}")
+                st.caption("Live pipeline events refresh every 2 seconds. Provider/API secrets are never shown here.")
+                st.code("\n".join(terminal_lines), language="text", wrap_lines=True)
+
+
+def reconcile_interrupted_thread_jobs(output_dir: str) -> int:
+    """Clear misleading queued records left behind after a dashboard restart."""
+    manager = get_job_manager(config.JOB_WORKER_MODE)
+    return manager.reconcile_orphaned_thread_jobs(output_dir)
+
+
+def completed_deliverable_records(records: list[dict]) -> list[dict]:
+    """Return completed jobs whose recorded MP4 still exists locally."""
+    return [
+        record
+        for record in records
+        if record.get("status") == "succeeded"
+        and record.get("output_video_path")
+        and os.path.isfile(record["output_video_path"])
+    ]
+
+
+def render_completed_deliverables(records: list[dict], *, key_prefix: str, heading: str | None = None) -> None:
+    """Render verified MP4 and SEO deliverables from durable job records."""
+    ready_records = completed_deliverable_records(records)
+    if not ready_records:
+        return
+    if heading:
+        st.markdown(heading)
+
+    for record in ready_records:
+        job_id = record["job_id"]
+        video_path = record["output_video_path"]
+        seo_path = record.get("output_seo_path") or os.path.splitext(video_path)[0] + ".txt"
+        title = record.get("output_name") or os.path.splitext(os.path.basename(video_path))[0]
+        created = str(record.get("updated_at") or record.get("created_at") or "").replace("T", " ")[:19]
+
+        with st.container(border=True):
+            st.markdown(f"<div class='gallery-card-title'>✅ {title}</div>", unsafe_allow_html=True)
+            st.caption(f"Render complete · {created} · {_format_file_size(os.path.getsize(video_path))}")
+            video_col, seo_col = st.columns([1.15, 0.85])
+            with video_col:
+                st.video(video_path)
+                with open(video_path, "rb") as video_file:
+                    st.download_button(
+                        "⬇️ Download MP4",
+                        data=video_file.read(),
+                        file_name=os.path.basename(video_path),
+                        mime="video/mp4",
+                        key=f"{key_prefix}_video_{job_id}",
+                        width="stretch",
+                    )
+            with seo_col:
+                if os.path.isfile(seo_path):
+                    with open(seo_path, "r", encoding="utf-8") as seo_file:
+                        seo_content = seo_file.read()
+                    st.text_area("SEO package", value=seo_content, height=250, key=f"{key_prefix}_seo_{job_id}")
+                    st.download_button(
+                        "⬇️ Download SEO package",
+                        data=seo_content,
+                        file_name=os.path.basename(seo_path),
+                        mime="text/plain",
+                        key=f"{key_prefix}_seo_download_{job_id}",
+                        width="stretch",
+                    )
+                else:
+                    st.warning("The MP4 is ready, but its SEO package is missing. Generate it again only if you need the SEO text.")
 
 def detect_ollama_models() -> list[str]:
     import requests
@@ -81,7 +255,13 @@ def get_edge_tts_voices():
             ("en-US-GuyNeural", "Male"),
             ("en-US-AriaNeural", "Female"),
             ("en-GB-SoniaNeural", "Female"),
-            ("en-GB-RyanNeural", "Male")
+            ("en-GB-RyanNeural", "Male"),
+            ("en-IN-PrabhatNeural", "Male"),
+            ("en-IN-NeerjaNeural", "Female"),
+            ("hi-IN-MadhurNeural", "Male"),
+            ("hi-IN-SwaraNeural", "Female"),
+            ("ar-SA-HamedNeural", "Male"),
+            ("ar-SA-ZariyahNeural", "Female")
         ]
 
     structured_voices = []
@@ -115,6 +295,19 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+require_dashboard_auth(st)
+
+try:
+    interrupted_queue_count = reconcile_interrupted_thread_jobs(config.OUTPUT_DIR)
+except Exception:
+    # Job history must never prevent the dashboard from opening.
+    interrupted_queue_count = 0
+if interrupted_queue_count:
+    st.warning(
+        f"{interrupted_queue_count} interrupted queued render(s) were marked as retryable. "
+        "Open My Videos and use Retry to start a fresh worker."
+    )
+
 # Dark theme premium styling
 st.markdown("""
 <style>
@@ -136,30 +329,17 @@ st.markdown("""
     }
 
     /* Header styling */
-    @keyframes gradient-flow {
-        0% { background-position: 0% 50%; }
-        50% { background-position: 100% 50%; }
-        100% { background-position: 0% 50%; }
-    }
-    
-    @keyframes title-glow {
-        0% { filter: drop-shadow(0 0 8px rgba(255, 215, 0, 0.3)); }
-        50% { filter: drop-shadow(0 0 25px rgba(255, 94, 98, 0.6)); }
-        100% { filter: drop-shadow(0 0 8px rgba(255, 215, 0, 0.3)); }
-    }
-
     .main-title {
         font-family: 'Outfit', sans-serif !important;
-        font-size: 3.8rem !important;
-        font-weight: 900 !important;
-        background: linear-gradient(270deg, #FFD700, #ff5e62, #ff9966, #FFD700) !important;
-        background-size: 300% 300% !important;
+        font-size: clamp(2.25rem, 5vw, 3.5rem) !important;
+        font-weight: 800 !important;
+        background: linear-gradient(135deg, #ffe08a, #f5b942) !important;
+        background-size: 100% 100% !important;
         -webkit-background-clip: text !important;
         -webkit-text-fill-color: transparent !important;
         text-align: center !important;
         margin-bottom: 0.1rem !important;
-        letter-spacing: -2px;
-        animation: gradient-flow 8s ease infinite, title-glow 4s ease-in-out infinite !important;
+        letter-spacing: -1.5px;
     }
 
     .subtitle {
@@ -167,7 +347,7 @@ st.markdown("""
         text-align: center !important;
         font-size: 1.05rem !important;
         color: #8E9BB0 !important;
-        margin-bottom: 2.5rem !important;
+        margin-bottom: 2rem !important;
     }
 
     /* Widget Header design */
@@ -220,6 +400,35 @@ st.markdown("""
     .stButton > button:hover, div[data-testid="stFormSubmitButton"] button:hover {
         background: linear-gradient(135deg, #FFE4B5 0%, #FF8C00 100%) !important;
         box-shadow: 0 6px 20px rgba(255, 165, 0, 0.4) !important;
+    }
+
+    div.st-key-generate_reel button {
+        min-height: 3.65rem !important;
+        font-size: 1.12rem !important;
+        letter-spacing: 0.01em;
+        box-shadow: 0 10px 28px rgba(255, 165, 0, 0.26) !important;
+    }
+
+    .studio-callout {
+        background: linear-gradient(135deg, rgba(255, 215, 0, 0.10), rgba(22, 28, 42, 0.75));
+        border: 1px solid rgba(255, 215, 0, 0.20);
+        border-radius: 14px;
+        padding: 1rem 1.1rem;
+        margin: 0.5rem 0 1rem;
+        color: #d8dbe2;
+    }
+
+    .gallery-card-title {
+        font-family: 'Outfit', sans-serif;
+        font-size: 1.12rem;
+        font-weight: 700;
+        color: #ffffff;
+        margin-bottom: 0.25rem;
+    }
+
+    .gallery-meta {
+        color: #9da8ba;
+        font-size: 0.88rem;
     }
 
     /* Secondary Button styling */
@@ -281,66 +490,6 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
-# Context manager to redirect stdout/stderr to a Streamlit code block
-@contextlib.contextmanager
-def redirect_stdout_to_streamlit(placeholder, progress_bar=None, status_text=None):
-    original_stdout = sys.stdout
-    original_stderr = sys.stderr
-    
-    class WebConsoleWriter:
-        def __init__(self, placeholder, progress_bar, status_text):
-            self.placeholder = placeholder
-            self.progress_bar = progress_bar
-            self.status_text = status_text
-            self.buffer = ""
-            self.current_progress = 0
-
-        def update_progress(self, percent, msg):
-            if percent > self.current_progress:
-                self.current_progress = percent
-                if self.progress_bar:
-                    self.progress_bar.progress(self.current_progress)
-                if self.status_text:
-                    self.status_text.markdown(f"**{msg} ({self.current_progress}%)**")
-
-        def write(self, text):
-            self.buffer += text
-            self.buffer = self.buffer[-5000:]
-            sys.__stdout__.write(text) # Also write to real console
-            
-            # Real-time Progress Parsing
-            lower_text = text.lower()
-            if "generating ai script" in lower_text or "structuring raw script" in lower_text:
-                self.update_progress(10, "✍️ Generating AI script...")
-            elif "searching for" in lower_text or "downloading" in lower_text:
-                self.update_progress(30, "🔍 Fetching stock media...")
-            elif "generating voiceover" in lower_text or "edge-tts" in lower_text or "elevenlabs" in lower_text:
-                self.update_progress(50, "🎙️ Synthesizing voiceover...")
-            elif "extracting clips" in lower_text or "processing video" in lower_text:
-                self.update_progress(70, "✂️ Preparing video clips...")
-            elif "crossfading clips" in lower_text or "merging final" in lower_text:
-                self.update_progress(85, "🎞️ Rendering final video...")
-            elif "success! created video" in lower_text or "deliverables copied" in lower_text:
-                self.update_progress(100, "✅ Done!")
-
-            if "\n" in text:
-                # Only update UI when a line is complete to reduce lag
-                # Keep only the last 2000 characters to prevent huge UI slow downs
-                display_text = self.buffer[-2000:] if len(self.buffer) > 2000 else self.buffer
-                self.placeholder.code(display_text, language="bash")
-
-        def flush(self):
-            sys.__stdout__.flush()
-            
-    writer = WebConsoleWriter(placeholder, progress_bar, status_text)
-    sys.stdout = writer
-    sys.stderr = writer
-    try:
-        yield
-    finally:
-        sys.stdout = original_stdout
-        sys.stderr = original_stderr
 
 # Main Layout
 st.markdown("<h1 class='main-title'>🎥 AI CONTENT ENGINE</h1>", unsafe_allow_html=True)
@@ -422,6 +571,45 @@ with st.sidebar:
             "10 minutes": 600
         }
         config.TARGET_DURATION = preset_map[duration_preset]
+
+        st.markdown("#### Content direction")
+        niche_selection = st.selectbox(
+            "Content Niche",
+            options=["General", "Education & Learning", "Technology & AI", "Business & Finance", "Health & Fitness", "Food & Recipes", "Travel & Lifestyle", "Entertainment & Pop Culture", "Motivation & Self Improvement", "News & Current Affairs", "Gaming", "History & Culture", "Custom"],
+            index=0,
+            help="Guides the script structure, hook, stock-media queries, and SEO package."
+        )
+        if niche_selection == "Custom":
+            custom_niche = st.text_input("Custom Niche", placeholder="e.g. Real estate for first-time buyers", max_chars=100)
+            config.CONTENT_NICHE = custom_niche.strip() or "General"
+        else:
+            config.CONTENT_NICHE = niche_selection
+
+        config.CONTENT_LANGUAGE = st.selectbox(
+            "Content Language",
+            options=["Urdu", "English", "Hindi", "Arabic", "Roman Urdu"],
+            index=0,
+            help="AI-generated captions and narration follow this language. Pasted raw scripts preserve their own wording."
+        )
+        config.CONTENT_TONE = st.selectbox(
+            "Content Tone",
+            options=["Engaging & Clear", "Educational", "Energetic & Viral", "Inspirational", "Professional", "Storytelling", "Funny & Casual", "Calm & Reflective", "Dramatic"],
+            index=0,
+            help="Sets the writing voice, hook, pacing, and call to action."
+        )
+        config.TARGET_PLATFORM = st.selectbox(
+            "Target Platform",
+            options=["Instagram Reels", "TikTok", "YouTube Shorts", "Facebook Reels", "LinkedIn", "X (Twitter)"],
+            index=0,
+            help="Tailors the hook and SEO copy. Frame size remains under Video Size / Aspect Ratio."
+        )
+        config.VISUAL_STYLE = st.selectbox(
+            "Visual Style",
+            options=["Cinematic", "Clean & Minimal", "Documentary", "Modern & Tech", "Warm & Lifestyle", "Fast-Paced Social", "Dark & Moody", "Bold & Colorful"],
+            index=0,
+            help="Guides stock-media search queries and the visual direction in the generated script."
+        )
+        st.caption("Language-aware caption fonts and custom font upload are supported for the selected content language.")
     
         media_selection = st.selectbox(
             "Media Type Preference",
@@ -436,11 +624,20 @@ with st.sidebar:
             "Images Only": "images"
         }
         config.MEDIA_PREFERENCE = pref_mapping[media_selection]
+
+        quality_selection = st.selectbox(
+            "Media Quality Profile",
+            options=["Balanced (recommended)", "High quality (slower, stricter)"],
+            index=0,
+            help="Filters out low-resolution source videos before download. High quality may return fewer results for niche topics."
+        )
+        config.MEDIA_QUALITY_PROFILE = "high" if quality_selection.startswith("High") else "balanced"
+        config.MIN_MEDIA_DIMENSION = 720 if config.MEDIA_QUALITY_PROFILE == "high" else 480
     
         allowed_sources = st.multiselect(
             "Allowed Media Sources",
-            options=["Pexels (Videos)", "Pixabay (Videos)", "Storyblocks (Videos)", "Google/Bing (Images)", "Pinterest (Images)", "Wikimedia Commons (Images)", "NASA (Images)", "Internet Archive (Videos)", "Unsplash (Images)"],
-            default=["Pexels (Videos)", "Pixabay (Videos)", "Google/Bing (Images)", "Pinterest (Images)", "Wikimedia Commons (Images)"],
+            options=["Pexels (Videos)", "Pixabay (Videos)", "Storyblocks (Videos)", "Google/Bing (Images)", "Wikimedia Commons (Images)", "NASA (Images)", "Internet Archive (Videos)", "Unsplash (Images)"],
+            default=["Pexels (Videos)", "Pixabay (Videos)", "Google/Bing (Images)", "Wikimedia Commons (Images)"],
             help="Check the stock sites you want to fetch media from. Uncheck to block a site."
         )
     
@@ -449,7 +646,6 @@ with st.sidebar:
             "Pixabay (Videos)": "pixabay",
             "Storyblocks (Videos)": "storyblocks",
             "Google/Bing (Images)": "google",
-            "Pinterest (Images)": "pinterest",
             "Wikimedia Commons (Images)": "wikimedia_image",
             "NASA (Images)": "nasa_image",
             "Internet Archive (Videos)": "archive",
@@ -495,7 +691,7 @@ with st.sidebar:
             )
         else:
             config.VOICE_PROVIDER = "edge-tts"
-            voices_list = get_edge_tts_voices()
+            voices_list = filter_voices_for_language(get_edge_tts_voices(), config.CONTENT_LANGUAGE)
             voice_options = [v["display"] for v in voices_list]
             default_voice = getattr(config, "VOICE_ID", "ur-PK-AsadNeural")
             default_index = 0
@@ -507,7 +703,7 @@ with st.sidebar:
                 "Microsoft Edge Voice Narrator",
                 options=voice_options,
                 index=default_index,
-                help="Select the Microsoft Edge narrator voice for voiceovers."
+                help=f"Voices compatible with {config.CONTENT_LANGUAGE} are shown first."
             )
             selected_voice_id = next((v["id"] for v in voices_list if v["display"] == selected_display), voices_list[0]["id"] if voices_list else "ur-PK-AsadNeural")
             config.VOICE_ID = selected_voice_id
@@ -516,7 +712,7 @@ with st.sidebar:
             "Background Music Vibe",
             options=["random", "mystery", "epic", "sad", "ancient", "modern", "intense"],
             index=0,
-            help="Custom soundtrack feel. 'random' will choose a random vibe."
+            help="Local royalty-free soundtrack feel. A selected track is generated once and then reused offline."
         )
     
         ambient_sound = st.selectbox(
@@ -600,44 +796,76 @@ with st.sidebar:
 
     with st.expander("🏷️ Branding & Overlays", expanded=False):
         # Font Settings
-        urdu_font_choice = st.selectbox(
-            "Caption Font (Urdu)",
-            options=["Jameel Noori Nastaleeq", "Noto Nastaliq Urdu"],
+        active_language = getattr(config, "CONTENT_LANGUAGE", "Urdu")
+        font_options = font_options_for_language(active_language)
+        caption_font_choice = st.selectbox(
+            f"Caption Font ({active_language})",
+            options=font_options,
             index=0,
-            help="Select the Urdu font for video captions."
+            help="The selected font is downloaded once if missing and burned directly into video captions."
         )
-        config.URDU_FONT_NAME = urdu_font_choice
+        font_preset = get_font_preset(caption_font_choice)
+        config.CAPTION_FONT_PRESET = caption_font_choice
+        config.CAPTION_FONT_FAMILY = font_preset["family"]
+        config.CAPTION_FONT_BOLD = bool(font_preset.get("bold", False))
+        config.URDU_FONT_NAME = font_preset["family"]  # Backward-compatible setting name.
+        config.FONT_PATH = os.path.join(config.ASSETS_DIR, font_preset["filename"])
+        config.CUSTOM_FONT_PATH = ""
+        config.CUSTOM_FONT_FAMILY = ""
+        config.CUSTOM_FONT_BOLD = False
+        config.CAPTION_FONT_SIZE = st.slider("Caption Font Size", min_value=28, max_value=84, value=52, step=1)
         
-        custom_font = st.file_uploader("Upload Custom Urdu/English Font (.ttf)", type=["ttf", "otf"])
+        custom_font = st.file_uploader("Upload Custom Caption Font (.ttf/.otf)", type=["ttf", "otf"])
         if custom_font:
-            os.makedirs(os.path.join(config.OUTPUT_DIR, "fonts"), exist_ok=True)
-            font_save_path = os.path.join(config.OUTPUT_DIR, "fonts", "custom.ttf")
-            with open(font_save_path, "wb") as f:
-                f.write(custom_font.getbuffer())
-            config.FONT_PATH = font_save_path
-            st.success("Custom font loaded successfully!")
+            valid, reason = validate_uploaded_file(custom_font, "font")
+            if not valid:
+                st.error(f"Custom font rejected: {reason}")
+            else:
+                os.makedirs(os.path.join(config.OUTPUT_DIR, "fonts"), exist_ok=True)
+                extension = os.path.splitext(custom_font.name)[1].lower() or ".ttf"
+                font_bytes = bytes(custom_font.getbuffer())
+                font_digest = hashlib.sha256(font_bytes).hexdigest()[:12]
+                font_save_path = os.path.join(config.OUTPUT_DIR, "fonts", f"custom_caption_{font_digest}{extension}")
+                with open(font_save_path, "wb") as f:
+                    f.write(font_bytes)
+                config.FONT_PATH = font_save_path
+                config.CUSTOM_FONT_PATH = font_save_path
+                config.CAPTION_FONT_PRESET = "Custom upload"
+                config.CUSTOM_FONT_FAMILY = font_family_from_file(font_save_path, os.path.splitext(custom_font.name)[0])
+                config.CUSTOM_FONT_BOLD = st.checkbox("Render custom font in bold weight", value=False)
+                config.CAPTION_FONT_FAMILY = config.CUSTOM_FONT_FAMILY
+                config.CAPTION_FONT_BOLD = config.CUSTOM_FONT_BOLD
+                st.success(f"Custom font loaded and will be used for this job: {config.CUSTOM_FONT_FAMILY}")
     
         # Bumper Settings
         col_intro, col_outro = st.columns(2)
         with col_intro:
             intro_vid = st.file_uploader("Upload Intro Bumper (.mp4)", type=["mp4"])
             if intro_vid:
-                os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-                intro_path = os.path.join(config.OUTPUT_DIR, "intro_bumper.mp4")
-                with open(intro_path, "wb") as f:
-                    f.write(intro_vid.getbuffer())
-                config.INTRO_BUMPER = intro_path
+                valid, reason = validate_uploaded_file(intro_vid, "mp4")
+                if not valid:
+                    st.error(f"Intro video rejected: {reason}")
+                else:
+                    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+                    intro_path = os.path.join(config.OUTPUT_DIR, "intro_bumper.mp4")
+                    with open(intro_path, "wb") as f:
+                        f.write(intro_vid.getbuffer())
+                    config.INTRO_BUMPER = intro_path
             else:
                 config.INTRO_BUMPER = None
             
         with col_outro:
             outro_vid = st.file_uploader("Upload Outro Bumper (.mp4)", type=["mp4"])
             if outro_vid:
-                os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-                outro_path = os.path.join(config.OUTPUT_DIR, "outro_bumper.mp4")
-                with open(outro_path, "wb") as f:
-                    f.write(outro_vid.getbuffer())
-                config.OUTRO_BUMPER = outro_path
+                valid, reason = validate_uploaded_file(outro_vid, "mp4")
+                if not valid:
+                    st.error(f"Outro video rejected: {reason}")
+                else:
+                    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+                    outro_path = os.path.join(config.OUTPUT_DIR, "outro_bumper.mp4")
+                    with open(outro_path, "wb") as f:
+                        f.write(outro_vid.getbuffer())
+                    config.OUTRO_BUMPER = outro_path
             else:
                 config.OUTRO_BUMPER = None
             
@@ -655,7 +883,7 @@ with st.sidebar:
             config.PROGRESS_BAR_HEIGHT = bar_height
         
         # Text Watermark & Grain
-        watermark_text = st.text_input("Text Watermark Handle", value="", placeholder="e.g., @UrduHistory_AI", help="Draws a translucent text brand handle bottom-center of the video.")
+        watermark_text = st.text_input("Text Watermark Handle", value="", placeholder="e.g., @YourBrand", help="Draws a translucent text brand handle bottom-center of the video.")
         config.WATERMARK_TEXT = watermark_text
     
         # Brand Watermark Settings
@@ -664,12 +892,15 @@ with st.sidebar:
         if show_logo:
             logo_file = st.file_uploader("Upload Logo Image (PNG only)", type=["png"])
             if logo_file:
-                # Save to history videos folder
-                os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-                logo_path = os.path.join(config.OUTPUT_DIR, "watermark.png")
-                with open(logo_path, "wb") as f:
-                    f.write(logo_file.getbuffer())
-                st.success("Logo uploaded successfully!")
+                valid, reason = validate_uploaded_file(logo_file, "png")
+                if not valid:
+                    st.error(f"Logo rejected: {reason}")
+                else:
+                    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+                    logo_path = os.path.join(config.OUTPUT_DIR, "watermark.png")
+                    with open(logo_path, "wb") as f:
+                        f.write(logo_file.getbuffer())
+                    st.success("Logo uploaded successfully!")
             
             # Check if logo exists to enable size/opacity settings
             logo_path = os.path.join(config.OUTPUT_DIR, "watermark.png")
@@ -695,61 +926,50 @@ with st.sidebar:
             else:
                 st.warning("⚠️ Please upload a PNG logo to see settings.")
 
-    with st.expander("🔑 API Keys Configuration", expanded=False):
-        new_gemini = st.text_input("Gemini API Key", value=config.GEMINI_API_KEY or "", type="password")
-        new_openai = st.text_input("OpenAI API Key", value=config.OPENAI_API_KEY or "", type="password")
-        new_groq = st.text_input("Groq API Key", value=config.GROQ_API_KEY or "", type="password")
-        new_openrouter = st.text_input("OpenRouter API Key", value=getattr(config, "OPENROUTER_API_KEY", "") or "", type="password")
-        new_elevenlabs = st.text_input("ElevenLabs API Key", value=getattr(config, "ELEVENLABS_API_KEY", "") or "", type="password")
-        new_pexels = st.text_input("Pexels API Key", value=config.PEXELS_API_KEY or "", type="password")
-        new_pixabay = st.text_input("Pixabay API Key", value=config.PIXABAY_API_KEY or "", type="password")
-        new_story_pub = st.text_input("Storyblocks Public Key", value=getattr(config, "STORYBLOCKS_PUBLIC_KEY", "") or "", type="password")
-        new_story_priv = st.text_input("Storyblocks Private Key", value=getattr(config, "STORYBLOCKS_PRIVATE_KEY", "") or "", type="password")
-    
-        if st.button("Save & Reload Keys 💾", use_container_width=True):
-            # Update local .env file in the workspace root
-            env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-            env_content = f"""PEXELS_API_KEY={new_pexels.strip()}
-PIXABAY_API_KEY={new_pixabay.strip()}
-OPENAI_API_KEY={new_openai.strip()}
-GEMINI_API_KEY={new_gemini.strip()}
-GROQ_API_KEY={new_groq.strip()}
-OPENROUTER_API_KEY={new_openrouter.strip()}
-ELEVENLABS_API_KEY={new_elevenlabs.strip()}
-ELEVENLABS_VOICE_ID={getattr(config, "ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM").strip()}
-VOICE_PROVIDER={getattr(config, "VOICE_PROVIDER", "edge-tts").strip()}
-STORYBLOCKS_PUBLIC_KEY={new_story_pub.strip()}
-STORYBLOCKS_PRIVATE_KEY={new_story_priv.strip()}
-"""
-            with open(env_path, "w", encoding="utf-8") as f:
-                f.write(env_content)
-                
-            # Update config singleton attributes instantly
-            config.GEMINI_API_KEY = new_gemini.strip()
-            config.OPENAI_API_KEY = new_openai.strip()
-            config.GROQ_API_KEY = new_groq.strip()
-            config.OPENROUTER_API_KEY = new_openrouter.strip()
-            config.ELEVENLABS_API_KEY = new_elevenlabs.strip()
-            config.PEXELS_API_KEY = new_pexels.strip()
-            config.PIXABAY_API_KEY = new_pixabay.strip()
-            config.STORYBLOCKS_PUBLIC_KEY = new_story_pub.strip()
-            config.STORYBLOCKS_PRIVATE_KEY = new_story_priv.strip()
-            
-            # Update os.environ
-            os.environ["GEMINI_API_KEY"] = new_gemini.strip()
-            os.environ["OPENAI_API_KEY"] = new_openai.strip()
-            os.environ["GROQ_API_KEY"] = new_groq.strip()
-            os.environ["OPENROUTER_API_KEY"] = new_openrouter.strip()
-            os.environ["ELEVENLABS_API_KEY"] = new_elevenlabs.strip()
-            os.environ["PEXELS_API_KEY"] = new_pexels.strip()
-            os.environ["PIXABAY_API_KEY"] = new_pixabay.strip()
-            os.environ["STORYBLOCKS_PUBLIC_KEY"] = new_story_pub.strip()
-            os.environ["STORYBLOCKS_PRIVATE_KEY"] = new_story_priv.strip()
-            
-            st.toast("API Keys saved to .env & reloaded!", icon="💾")
-            st.rerun()
+    with st.expander("🔑 API Key Status", expanded=False):
+        key_definitions = [
+            ("Gemini API Key", "GEMINI_API_KEY"),
+            ("OpenAI API Key", "OPENAI_API_KEY"),
+            ("Groq API Key", "GROQ_API_KEY"),
+            ("OpenRouter API Key", "OPENROUTER_API_KEY"),
+            ("ElevenLabs API Key", "ELEVENLABS_API_KEY"),
+            ("Pexels API Key", "PEXELS_API_KEY"),
+            ("Pixabay API Key", "PIXABAY_API_KEY"),
+            ("Storyblocks Public Key", "STORYBLOCKS_PUBLIC_KEY"),
+            ("Storyblocks Private Key", "STORYBLOCKS_PRIVATE_KEY"),
+        ]
+        configured = [label for label, attribute in key_definitions if bool(getattr(config, attribute, ""))]
+        st.caption(f"{len(configured)}/{len(key_definitions)} key(s) configured. Values remain hidden; leave a field blank to keep its existing value.")
+        st.info("New values are saved only to this computer's local `.env` file and applied immediately. Do not enable this dashboard for untrusted public users.")
+        updates = {}
+        for label, attribute in key_definitions:
+            status = "configured" if bool(getattr(config, attribute, "")) else "not configured"
+            updates[attribute] = st.text_input(
+                label,
+                value="",
+                type="password",
+                placeholder=f"Currently {status}; enter a replacement to change it",
+                key=f"saved_{attribute.lower()}",
+            )
+        if st.button("Save API keys locally", width="stretch"):
+            try:
+                saved = save_local_env_values(
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
+                    updates,
+                )
+            except Exception as error:
+                st.error(f"Could not save local API settings: {error}")
+            else:
+                for attribute in saved:
+                    value = updates[attribute].strip()
+                    setattr(config, attribute, value)
+                    os.environ[attribute] = value
+                if saved:
+                    st.toast(f"Saved and applied {len(saved)} API key(s) locally.", icon="🔐")
+                    st.rerun()
+                st.info("No new key was entered; existing configuration was kept unchanged.")
 
-tabs = st.tabs(["🚀 Generate Videos", "📂 View Gallery Output", "ℹ️ Tool Help/Guide"])
+tabs = st.tabs(["🚀 Create Reel", "🎞️ My Videos", "ℹ️ Tool Help/Guide"])
 
 # Tab 1: Video Generator
 with tabs[0]:
@@ -771,11 +991,11 @@ with tabs[0]:
         manual_script_data = None
         
         if mode == "Single Topic Generation":
-            topic_input = st.text_input("Enter Video Topic", placeholder="e.g. Future of AI, Titanic, Top 5 Horror Stories, Quantum Physics")
+            topic_input = st.text_input("Enter Video Topic", placeholder="e.g. Future of AI, 5 healthy breakfast ideas, Quantum Physics")
         elif mode == "Batch Topic Generation":
             batch_input = st.text_area(
                 "Enter Multiple Topics (Comma Separated)",
-                placeholder="e.g. AI Revolution, Taj Mahal, Cyber Security, Elon Musk, Space Exploration",
+                placeholder="e.g. Study Tips, Home Workout, Cyber Security, Travel Guide, Space Exploration",
                 height=150
             )
         elif mode == "CSV/Excel Batch Upload":
@@ -784,10 +1004,16 @@ with tabs[0]:
             if uploaded_file:
                 import pandas as pd
                 try:
-                    if uploaded_file.name.endswith(".csv"):
+                    expected_kind = "csv" if uploaded_file.name.lower().endswith(".csv") else "xlsx"
+                    valid, reason = validate_uploaded_file(uploaded_file, expected_kind)
+                    if not valid:
+                        raise ValueError(reason)
+                    if expected_kind == "csv":
                         df = pd.read_csv(uploaded_file)
                     else:
                         df = pd.read_excel(uploaded_file)
+                    if len(df) > 1_000 or len(df.columns) > 100:
+                        raise ValueError("Batch files are limited to 1,000 rows and 100 columns.")
                     st.success(f"Successfully loaded {len(df)} rows!")
                     st.write(df.head(5))
                     st.session_state["uploaded_df"] = df
@@ -803,10 +1029,15 @@ with tabs[0]:
             # Setup session state for news articles
             col_fetch, col_clear = st.columns([1, 1])
             with col_fetch:
-                if st.button("🔍 Fetch Articles", use_container_width=True):
+                if st.button("🔍 Fetch Articles", width="stretch"):
                     from history_reels.news_scraper import fetch_rss_feed
-                    with st.spinner("Fetching and parsing RSS feed..."):
-                        articles = fetch_rss_feed(news_url)
+                    valid, reason = validate_external_url(news_url)
+                    if not valid:
+                        st.error(f"URL rejected: {reason}")
+                        articles = []
+                    else:
+                        with st.spinner("Fetching and parsing RSS feed..."):
+                            articles = fetch_rss_feed(news_url)
                         if articles:
                             st.session_state["fetched_articles"] = articles
                             st.session_state["feed_url_cache"] = news_url
@@ -815,7 +1046,7 @@ with tabs[0]:
                             st.session_state["fetched_articles"] = []
                             st.info("Direct web page URL or empty feed detected. It will be scraped directly when pipeline starts.")
             with col_clear:
-                if st.button("🧹 Clear Fetched", use_container_width=True):
+                if st.button("🧹 Clear Fetched", width="stretch"):
                     st.session_state["fetched_articles"] = []
                     st.session_state["feed_url_cache"] = ""
                     st.rerun()
@@ -839,11 +1070,19 @@ with tabs[0]:
             year = st.text_input("Context / Era / Year", value="Modern Day")
             music_vibe = st.selectbox("Soundtrack Vibe", options=["mystery", "epic", "sad", "ancient", "modern", "intense"], index=0)
             
-            st.markdown("#### Subtitles (Urdu Nastaliq - Bold words with **double asterisks**)")
-            captions_text = st.text_area("Captions (One per line)", value="کِیا آپ جانتے ہیں کہ **AI** دنیا کیسے بدلے گی؟\nہر طرف **اسمارٹ روبوٹس** کا قبضہ ہوگا۔\nیہ ہماری **زندگیوں** کو آسان بنا دے گا!\nکمنٹس میں اپنی **رائے** کا اظہار کریں۔")
+            manual_examples = {
+                "Urdu": ("کیا آپ جانتے ہیں کہ **AI** دنیا کیسے بدل رہی ہے؟\nیہ کام کو زیادہ **تیز** بنا سکتی ہے۔", "کیا آپ جانتے ہیں کہ اے آئی دنیا کیسے بدل رہی ہے؟\nیہ کام کو زیادہ تیز بنا سکتی ہے۔"),
+                "English": ("How is **AI** changing everyday work?\nIt can make routine tasks **faster**.", "How is AI changing everyday work?\nIt can make routine tasks faster."),
+                "Hindi": ("**AI** रोज़मर्रा के काम को कैसे बदल रही है?\nयह सामान्य कार्यों को **तेज़** बना सकती है।", "एआई रोज़मर्रा के काम को कैसे बदल रही है?\nयह सामान्य कार्यों को तेज़ बना सकती है।"),
+                "Arabic": ("كيف يغيّر **الذكاء الاصطناعي** العمل اليومي؟\nيمكنه جعل المهام **أسرع**.", "كيف يغيّر الذكاء الاصطناعي العمل اليومي؟\nيمكنه جعل المهام أسرع."),
+                "Roman Urdu": ("**AI** rozmarra ka kaam kaise badal rahi hai?\nYeh routine tasks ko **tez** bana sakti hai.", "AI rozmarra ka kaam kaise badal rahi hai?\nYeh routine tasks ko tez bana sakti hai."),
+            }
+            example_captions, example_narrations = manual_examples.get(config.CONTENT_LANGUAGE, manual_examples["English"])
+            st.markdown(f"#### Subtitles ({config.CONTENT_LANGUAGE}; bold words with **double asterisks**)")
+            captions_text = st.text_area("Captions (One per line)", value=example_captions)
             
-            st.markdown("#### Spoken Speech Narration (Urdu Speech Text)")
-            narrations_text = st.text_area("Narrations (One per line)", value="کیا آپ جانتے ہیں کہ آرٹیفیشل انٹیلیجنس دنیا کیسے بدلے گی؟\nہر طرف اسمارٹ روبوٹس کا قبضہ ہوگا۔\nیہ ہماری زندگیوں کو آسان بنا دے گا!\nکمنٹس میں اپنی رائے کا اظہار کریں۔")
+            st.markdown(f"#### Spoken Narration ({config.CONTENT_LANGUAGE})")
+            narrations_text = st.text_area("Narrations (One per line)", value=example_narrations)
             
             st.markdown("#### Media Search Queries (comma separated)")
             queries_str = st.text_area(
@@ -864,34 +1103,34 @@ with tabs[0]:
                 "captions": captions_list,
                 "narrations": narrations_list,
                 "queries": queries_list,
-                "seo_title": f"{title.strip()} — Mind Blowing Facts 🧠✨",
+                "seo_title": f"{title.strip()} — Watch This ✨",
                 "seo_description": f"{title.strip()} ({year.strip()}) custom script generated manually.",
-                "seo_hashtags": "#Viral #Trending #Facts #UrduNarratives",
-                "seo_short_caption": f"Mind blowing facts about {title.strip()}! #Viral #Urdu"
+                "seo_hashtags": "#Reels #ShortVideos #ContentCreator",
+                "seo_short_caption": f"Watch this reel about {title.strip()}! #Reels #ShortVideos"
             }
             
     with col_action:
-        st.markdown("<div class='widget-title'>🎬 STEP 2: COMPILE PIPELINE</div>", unsafe_allow_html=True)
-        st.write("Click below to initialize the video generation engine. This will query the AI model, fetch relevant media assets, synthesize audio, and compile the final reel.")
+        st.markdown("<div class='widget-title'>🎬 STEP 2: GENERATE VIDEO</div>", unsafe_allow_html=True)
+        st.caption("Your sidebar settings will be saved with this render.")
         
-        start_btn = st.button("🚀 Generate Video", use_container_width=True)
+        start_btn = st.button("✨ Generate Video", key="generate_reel", width="stretch")
 
     # Output Console & Log Blocks
     if start_btn:
         topics_list = []
         if mode == "Single Topic Generation":
             if not topic_input.strip():
-                st.error("Error: Please provide a video topic.")
+                st.error("Add a video topic to start. Example: “5 productivity tips for students”.")
             else:
                 topics_list = [topic_input.strip()]
         elif mode == "Batch Topic Generation":
             if not batch_input.strip():
-                st.error("Error: Please provide topics.")
+                st.error("Add at least one topic, separated by commas, to create a batch.")
             else:
                 topics_list = [t.strip() for t in batch_input.split(",") if t.strip()]
         elif mode == "CSV/Excel Batch Upload":
             if "uploaded_df" not in st.session_state or st.session_state["uploaded_df"] is None or st.session_state["uploaded_df"].empty:
-                st.error("Error: Please upload a valid CSV or Excel file first.")
+                st.error("Upload a valid CSV or Excel file before starting this batch.")
             else:
                 import pandas as pd
                 df = st.session_state["uploaded_df"]
@@ -900,34 +1139,38 @@ with tabs[0]:
                 
                 for _, row in df.iterrows():
                     row_dict = {k.lower(): v for k, v in row.to_dict().items()}
+                    def cell_text(name, default=""):
+                        value = row_dict.get(name, default)
+                        return "" if pd.isna(value) else str(value).strip()
+
                     if has_script_cols:
-                        queries_val = row_dict.get("queries", "")
-                        if pd.isna(queries_val):
-                            queries_val = ""
+                        queries_val = cell_text("queries")
                         queries_list = [q.strip() for q in str(queries_val).split(",") if q.strip()]
                         while len(queries_list) < 8:
-                            queries_list.append("history")
+                            queries_list.append("general visual storytelling")
                         queries_list = queries_list[:8]
                         
                         captions_list = []
                         narrations_list = []
                         for i in range(1, 21):
-                            cap_val = str(row_dict.get(f"caption_text_{i}", "")).strip()
-                            narr_val = str(row_dict.get(f"narration_text_{i}", "")).strip()
-                            if cap_val: captions_list.append(cap_val)
-                            if narr_val: narrations_list.append(narr_val)
+                            cap_val = cell_text(f"caption_text_{i}")
+                            narr_val = cell_text(f"narration_text_{i}")
+                            if cap_val:
+                                captions_list.append(cap_val)
+                            if narr_val:
+                                narrations_list.append(narr_val)
                         
                         script_data = {
-                            "title": str(row_dict.get("title", "")).strip(),
-                            "year": str(row_dict.get("year", "Unknown")).strip(),
-                            "bg_music_vibe": str(row_dict.get("bg_music_vibe", "mystery")).strip(),
+                            "title": cell_text("title"),
+                            "year": cell_text("year", "Unknown"),
+                            "bg_music_vibe": cell_text("bg_music_vibe", "mystery"),
                             "captions": captions_list,
                             "narrations": narrations_list,
                             "queries": queries_list,
-                            "seo_title": str(row_dict.get("seo_title", f"{row_dict.get('title', '')} — Secrets of the Past 🏺✨")).strip(),
-                            "seo_description": str(row_dict.get("seo_description", "")).strip(),
-                            "seo_hashtags": str(row_dict.get("seo_hashtags", "#History #Urdu")).strip(),
-                            "seo_short_caption": str(row_dict.get("seo_short_caption", "")).strip()
+                            "seo_title": cell_text("seo_title", f"{cell_text('title')} — Watch This ✨"),
+                            "seo_description": cell_text("seo_description"),
+                            "seo_hashtags": cell_text("seo_hashtags", "#Reels #ShortVideos #ContentCreator"),
+                            "seo_short_caption": cell_text("seo_short_caption")
                         }
                         topics_list.append({"type": "manual_script", "data": script_data, "title": script_data["title"]})
                     else:
@@ -951,12 +1194,12 @@ with tabs[0]:
                 topics_list = [{"type": "rss", "link": art["link"], "desc": art["description"], "title": art["title"]}]
             else:
                 if not news_url.strip():
-                    st.error("Error: Please provide a news RSS feed or web page URL.")
+                    st.error("Add a valid public RSS feed or article URL before starting.")
                 else:
                     topics_list = [{"type": "direct", "link": news_url.strip(), "desc": "", "title": "Scraped Article"}]
         elif mode == "AI Script Formatter (Paste Raw Text)":
             if not raw_script_input.strip():
-                st.error("Error: Please paste your raw script.")
+                st.error("Paste the script you want the AI to format before starting.")
             else:
                 topics_list = [raw_script_input.strip()]
         elif mode == "Fully Custom Script (Manual Override)":
@@ -968,132 +1211,177 @@ with tabs[0]:
             topics_list = [None] # Fallback mode triggers with None topic
 
         if topics_list:
-            st.markdown("### 🖥️ Live Render Engine Console")
-            
+            manager = get_job_manager(config.JOB_WORKER_MODE)
+            queued_jobs = []
             for idx, t in enumerate(topics_list, 1):
-                # Setup Modern Progress UI per video
-                st.markdown(f"#### 🎬 Processing Video {idx} of {len(topics_list)}")
-                status_container = st.container()
-                with status_container:
-                    status_text = st.empty()
-                    progress_bar = st.progress(0)
-                    status_text.markdown("**⏳ Initializing Video Engine... (0%)**")
-                    
-                console_placeholder = st.empty()
-                
-                # Setup logs placeholder with injected progress states
-                with redirect_stdout_to_streamlit(console_placeholder, progress_bar, status_text):
-                    # Set custom vibe if selected (non-random)
-                    if vibe_selection != "random":
-                        config.BG_MUSIC_VIBE = vibe_selection
-                    else:
-                        import random
-                        config.BG_MUSIC_VIBE = random.choice(["mystery", "epic", "sad", "ancient", "modern", "intense"])
-                        
-                    t_name = t
-                    if isinstance(t, dict):
-                        t_name = t.get("title", "Scraped Article")
-                        
-                    if t:
-                        if mode == "AI Script Formatter (Paste Raw Text)":
-                            print(f"\n[UI Run {idx}/{len(topics_list)}] Structuring Raw Script Input...")
-                        elif mode == "Live News & RSS Scraping":
-                            print(f"\n[UI Run {idx}/{len(topics_list)}] Scraping and Structuring from '{t_name}'...")
-                        elif mode == "CSV/Excel Batch Upload":
-                            print(f"\n[UI Run {idx}/{len(topics_list)}] Processing uploaded batch row '{t_name}'...")
-                        else:
-                            print(f"\n[UI Run {idx}/{len(topics_list)}] Initiating Topic: '{t_name}'")
-                    else:
-                        print(f"\n[UI Run] Initiating Fallback Mode...")
-                        
-                    # Capture this run's settings before starting expensive work.
-                    # Each job owns its own media tracking, timing data, and temp
-                    # directory, so a second Streamlit session cannot overwrite it.
-                    job = create_generation_job(config)
-                    print(f"[Job {job.job_id}] Workspace: {job.TOPIC_TEMP_DIR}")
-                    try:
-                        if mode == "Fully Custom Script (Manual Override)":
-                            success = generate_video_for_topic(None, provider=provider, manual_script_data=manual_script_data, job=job)
-                        elif mode == "AI Script Formatter (Paste Raw Text)":
-                            success = generate_video_for_topic(t, provider=provider, is_raw_script=True, job=job)
-                        elif mode == "Live News & RSS Scraping":
-                            from history_reels.news_scraper import scrape_article_text
-                            print(f"Scraping clean text content from URL: {t['link']}...")
-                            scraped_text = scrape_article_text(t["link"]) or t["desc"] or t["title"]
-                            if not scraped_text or not scraped_text.strip():
-                                print("Error: Failed to extract text from URL.")
-                                success = False
-                            else:
-                                print(f"Scraped content successfully (Length: {len(scraped_text)} characters).")
-                                success = generate_video_for_topic(scraped_text, provider=provider, is_raw_script=True, job=job)
-                        elif mode == "CSV/Excel Batch Upload":
-                            if t["type"] == "manual_script":
-                                success = generate_video_for_topic(None, provider=provider, manual_script_data=t["data"], job=job)
-                            else:
-                                success = generate_video_for_topic(t["data"], provider=provider, job=job)
-                        else:
-                            success = generate_video_for_topic(t, provider=provider, job=job)
-                    except Exception as e:
-                        st.error(f"Error generating video for topic: {e}")
-                        success = False
-                    
-                    if success:
-                        st.balloons()
-                        st.success(f"Successfully generated Video for Topic: '{t_name or 'Baghdad Battery'}'!")
-                        
-                        # Find and display the generated video + SEO package in UI
-                        output_name = job.OUTPUT_NAME
-                        video_path = job.video_path
-                        txt_path = job.seo_path
-                        
-                        # Render output column
-                        st.markdown("### 🎯 Newly Created Deliverable")
-                        col_vid, col_txt = st.columns([1, 1])
-                        with col_vid:
-                            if os.path.exists(video_path):
-                                st.video(video_path)
-                            else:
-                                st.error("Generated video file path not resolved.")
-                        with col_txt:
-                            if os.path.exists(txt_path):
-                                with open(txt_path, "r", encoding="utf-8") as f:
-                                    st.text_area("SEO Metadata Package", value=f.read(), height=400)
-                            else:
-                                st.warning("SEO Package text file not resolved.")
-                    else:
-                        err_msg = job.last_error or "Unknown build error."
-                        st.error(f"❌ Failed compilation for Topic: '{t_name or 'Baghdad Battery'}'\n\n**Reason:** {err_msg}")
+                config.BG_MUSIC_VIBE = (
+                    vibe_selection if vibe_selection != "random"
+                    else random.choice(["mystery", "epic", "sad", "ancient", "modern", "intense"])
+                )
+                job = create_generation_job(config)
+                if mode == "Fully Custom Script (Manual Override)":
+                    job_id = manager.submit(job, topic=None, provider=provider, manual_script_data=manual_script_data)
+                elif mode == "AI Script Formatter (Paste Raw Text)":
+                    job_id = manager.submit(job, topic=t, provider=provider, is_raw_script=True)
+                elif mode == "Live News & RSS Scraping":
+                    job_id = manager.submit(job, topic=t, provider=provider)
+                elif mode == "CSV/Excel Batch Upload" and t["type"] == "manual_script":
+                    job_id = manager.submit(job, topic=None, provider=provider, manual_script_data=t["data"])
+                elif mode == "CSV/Excel Batch Upload":
+                    job_id = manager.submit(job, topic=t["data"], provider=provider)
+                else:
+                    job_id = manager.submit(job, topic=t, provider=provider)
+                queued_jobs.append(job_id)
 
-# Tab 2: Gallery Output View
+            st.success(f"{len(queued_jobs)} reel job(s) added to the render queue.")
+            st.session_state["latest_render_job_ids"] = queued_jobs
+            st.info("Follow the live stage tracker below. The completed video and its SEO package will appear here automatically.")
+
+    st.markdown("### 🧵 Background Render Queue")
+    render_live_generation_status(config.OUTPUT_DIR)
+    current_records = JobStore(config.OUTPUT_DIR).list_jobs(limit=25)
+    tracked_ids = st.session_state.get("latest_render_job_ids", [])
+    tracked_records = [record for record in current_records if record.get("job_id") in tracked_ids]
+    completed_current_records = completed_deliverable_records(tracked_records)
+    if not completed_current_records:
+        completed_current_records = completed_deliverable_records(current_records[:1])
+    if completed_current_records:
+        render_completed_deliverables(
+            completed_current_records,
+            key_prefix="create_complete",
+            heading="### ✅ Latest completed reel",
+        )
+
+# Tab 2: Reel library and job history
 with tabs[1]:
-    st.markdown("<div class='widget-title'>📂 PREVIEW GENERATED DELIVERABLES</div>", unsafe_allow_html=True)
-    st.write(f"Scanned output directory: `{config.OUTPUT_DIR}`")
+    st.markdown("<div class='widget-title'>🎞️ MY VIDEOS</div>", unsafe_allow_html=True)
+    st.caption("Preview completed videos, download deliverables and keep an eye on every render in one place.")
+
+    try:
+        job_store = JobStore(config.OUTPUT_DIR)
+        manager = get_job_manager(config.JOB_WORKER_MODE)
+        recent_jobs = job_store.list_jobs(limit=15)
+        completed_count = sum(record.get("status") == "succeeded" for record in recent_jobs)
+        active_count = sum(record.get("status") in {"queued", "running"} for record in recent_jobs)
+        metric_one, metric_two, metric_three = st.columns(3)
+        metric_one.metric("Recent jobs", len(recent_jobs))
+        metric_two.metric("Ready to publish", completed_count)
+        metric_three.metric("Currently rendering", active_count)
+
+        if manager.mode == "process" and st.button("Recover queued process jobs"):
+            recovered = manager.recover_queued(config.OUTPUT_DIR)
+            st.success(f"Started {recovered} recoverable queued job(s).")
+            st.rerun()
+        with st.expander("History maintenance", expanded=False):
+            st.caption("This removes old job records and event logs only. Your exported videos and SEO files stay untouched.")
+            retention_days = st.number_input("Keep terminal job history for days", min_value=1, max_value=3650, value=30, step=1)
+            if st.button("Purge old history records"):
+                removed = job_store.cleanup_history(int(retention_days))
+                st.success(f"Removed {removed} terminal history record(s). Deliverable media files were not changed.")
+
+        if recent_jobs:
+            st.markdown("#### Render queue & recent activity")
+            for record in recent_jobs:
+                job_id = record["job_id"]
+                status = record["status"]
+                with st.container(border=True):
+                    title_col, progress_col, action_col = st.columns([3, 2, 1])
+                    title_col.markdown(f"**{record.get('topic') or 'Untitled reel'}**")
+                    title_col.caption(f"{_status_badge(status)} · Job {job_id[-8:]}")
+                    progress = int(record.get("progress") or 0)
+                    if status in {"queued", "running"}:
+                        progress_col.progress(progress, text=f"{_workflow_label(record.get('current_stage'))} · {progress}%")
+                    elif status == "succeeded":
+                        progress_col.success("Complete · MP4 and SEO package ready")
+                    else:
+                        progress_col.caption(f"{_workflow_label(record.get('current_stage'))} · Needs attention")
+                    if status in {"queued", "running"}:
+                        if action_col.button("Cancel", key=f"cancel_{job_id}"):
+                            manager.cancel(config.OUTPUT_DIR, job_id)
+                            st.rerun()
+                    elif status in {"failed", "cancelled"}:
+                        if action_col.button("Retry", key=f"retry_{job_id}"):
+                            retry_id = manager.retry(config.OUTPUT_DIR, config, job_id)
+                            if retry_id:
+                                st.success(f"Retry queued: {retry_id}")
+                                st.rerun()
+                            else:
+                                st.error("This job cannot be retried because its original local request details are unavailable.")
+                    else:
+                        action_col.caption("Complete")
+                    with st.expander("Technical event log", expanded=False):
+                        events = job_store.list_events(job_id, limit=25)
+                        if events:
+                            st.dataframe(events, width="stretch", hide_index=True)
+                        else:
+                            st.caption("No detailed events were recorded for this job.")
+        else:
+            st.info("No render history yet. Create your first reel from the **Create Reel** tab and its live progress will appear here.")
+    except Exception:
+        st.warning("Render history is temporarily unavailable. Your output files can still be previewed below; refresh the page in a moment to retry.")
     
-    # Scan directory
+    completed_records = completed_deliverable_records(recent_jobs if 'recent_jobs' in locals() else [])
+    if completed_records:
+        render_completed_deliverables(
+            completed_records,
+            key_prefix="library_complete",
+            heading="#### Recent completed renders",
+        )
+
+    # Scan directory for older exports that predate the durable job history.
     mp4_files = glob.glob(os.path.join(config.OUTPUT_DIR, "*.mp4"))
     mp4_files.sort(key=os.path.getmtime, reverse=True)
+    recorded_videos = {record["output_video_path"] for record in completed_records}
+    mp4_files = [path for path in mp4_files if path not in recorded_videos]
     
     if not mp4_files:
-        st.info("No compiled videos found in the deliverables folder yet. Go to Tab 1 to generate yours!")
+        st.markdown("### Your reel library is ready")
+        st.info("No completed videos yet. Create a reel, follow its render status, then return here to preview and download the final MP4 plus SEO package.")
     else:
-        # Show in clean columns
-        for vid_path in mp4_files:
-            file_basename = os.path.basename(vid_path)
-            file_title = file_basename.rsplit(".", 1)[0]
-            
-            with st.expander(f"🎬 {file_title}", expanded=False):
-                col_g_vid, col_g_txt = st.columns([1, 1])
-                
-                with col_g_vid:
-                    st.video(vid_path)
-                    
-                with col_g_txt:
-                    txt_path = os.path.join(config.OUTPUT_DIR, f"{file_title}.txt")
-                    if os.path.exists(txt_path):
-                        with open(txt_path, "r", encoding="utf-8") as f:
-                            st.text_area("SEO Package Details", value=f.read(), height=350, key=f"txt_{file_title}")
-                    else:
-                        st.write("No SEO description metadata txt file found for this video.")
+        st.markdown("#### Earlier exported videos")
+        st.caption(f"{len(mp4_files)} older reel(s). Select one to preview and export without loading the entire library at once.")
+        selected_video = st.selectbox(
+            "Choose a reel to preview",
+            options=mp4_files,
+            format_func=lambda path: os.path.basename(path).rsplit(".", 1)[0],
+        )
+        file_basename = os.path.basename(selected_video)
+        file_title = file_basename.rsplit(".", 1)[0]
+        txt_path = os.path.join(config.OUTPUT_DIR, f"{file_title}.txt")
+        modified = datetime.fromtimestamp(os.path.getmtime(selected_video)).strftime("%d %b %Y · %I:%M %p")
+        with st.container(border=True):
+            st.markdown(f"<div class='gallery-card-title'>🎬 {file_title}</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='gallery-meta'>Exported {modified} · {_format_file_size(os.path.getsize(selected_video))} · Vertical reel deliverable</div>",
+                unsafe_allow_html=True,
+            )
+            col_g_vid, col_g_txt = st.columns([1.15, 0.85])
+            with col_g_vid:
+                st.video(selected_video)
+                with open(selected_video, "rb") as video_file:
+                    st.download_button(
+                        "⬇️ Download MP4",
+                        data=video_file.read(),
+                        file_name=file_basename,
+                        mime="video/mp4",
+                        key=f"download_video_{file_title}",
+                        width="stretch",
+                    )
+            with col_g_txt:
+                if os.path.exists(txt_path):
+                    with open(txt_path, "r", encoding="utf-8") as seo_file:
+                        seo_content = seo_file.read()
+                    st.text_area("SEO package", value=seo_content, height=260, key=f"txt_{file_title}")
+                    st.download_button(
+                        "⬇️ Download SEO package",
+                        data=seo_content,
+                        file_name=os.path.basename(txt_path),
+                        mime="text/plain",
+                        key=f"download_seo_{file_title}",
+                        width="stretch",
+                    )
+                else:
+                    st.info("The MP4 is ready. No SEO package was found for this older export.")
 
 # Tab 3: Tool Help/Guide
 with tabs[2]:
@@ -1115,7 +1403,7 @@ with tabs[2]:
             1. Click on [Google AI Studio](https://aistudio.google.com/) website link.
             2. Apne Google (Gmail) Account se log in karein.
             3. Blue color ke **\"Get API Key\"** button par click karein.
-            4. **\"Create API Key\"** button press karein aur generated key ko copy kar ke dashboard ke sidebar main paste kar dein.
+            4. **\"Create API Key\"** press karein aur key ko local `.env` ya hosting platform ke managed secrets mein save karein.
             """)
             
         # 2. OpenRouter API Key
@@ -1150,7 +1438,7 @@ with tabs[2]:
             **How to Get (Banane ka tareeqa):**
             1. Visit [OpenAI Developer Platform](https://platform.openai.com/).
             2. Dashboard login kar ke left bar main **\"API Keys\"** par jayein.
-            3. **\"Create new secret key\"** click karein aur key copy kar ke dashboard main paste karein.
+            3. **\"Create new secret key\"** click karein aur key ko local `.env` ya hosting platform ke managed secrets mein save karein.
             """)
 
         # 5. ElevenLabs API Key
@@ -1162,7 +1450,7 @@ with tabs[2]:
             1. Visit [ElevenLabs.io](https://elevenlabs.io/).
             2. Sign up or log into your account.
             3. Go to **Profile Settings** (bottom left avatar menu) and select **"Profile + API Keys"**.
-            4. Copy your **API Key** and paste it in the dashboard.
+            4. Copy your **API Key** and save it in local `.env` or your hosting platform's managed secrets.
             """)
 
         # 6. Pexels Stock Media API Key
@@ -1173,7 +1461,7 @@ with tabs[2]:
             **How to Get (Banane ka tareeqa):**
             1. Go to [Pexels Developer Portal](https://www.pexels.com/api/).
             2. Sign up / login kar ke apna developer account settings page open karein.
-            3. **\"Your API Key\"** section main request submission (simple form entry) karte hi instant aur free API key show ho jayegi, use copy kar ke dashboard sidebar main paste kar dein.
+            3. **\"Your API Key\"** section se key copy karke local `.env` ya hosting platform ke managed secrets mein save karein.
             """)
 
         # 7. Pixabay Stock Media API Key
@@ -1217,7 +1505,7 @@ with tabs[2]:
 
         with st.expander("📝 Mode 1: Single Video (Standard)", expanded=True):
             st.markdown("""
-            **Working (Kaam):** Aap is option main bas koi bhi historical or standard video topic likhte hain (e.g. *Taj Mahal* or *Titanic*), aur system AI model ke through automatic voice, script, clips matching aur final compilation process handle karta hai.
+            **Working (Kaam):** Aap is option main kisi bhi niche ka topic likhte hain (e.g. *study tips*, *fitness*, *travel*, *technology*), aur system AI model ke through automatic voice, script, clips matching aur final compilation process handle karta hai.
             """)
 
         with st.expander("🗂️ Mode 2: Batch Videos (Multiple)", expanded=False):
@@ -1247,9 +1535,9 @@ with tabs[2]:
             **Working (Kaam):** Completely custom manual form. Aap slides ke dynamic text, spoken voice transcripts line by line, custom search keywords aur music vibe khud manually type or edit karte hain. Kisi AI API key consumption ki zaroorat nahi hai (Absolutely Free!).
             """)
 
-        with st.expander("⚙️ Mode 7: Run Fallback Demo (Baghdad Battery)", expanded=False):
+        with st.expander("⚙️ Mode 7: Run Fallback Demo (Universal Creator Demo)", expanded=False):
             st.markdown("""
-            **Working (Kaam):** Local demo run jo local resources (cached media) use kar ke 'Baghdad Battery' short documentary reel compile karta hai, taaki testing main APIs or stock key limits consume na hon.
+            **Working (Kaam):** Ye ek neutral creator demo run karta hai jisse aap pipeline ka output check kar sakte hain. Is mode mein bhi configured media sources aur local assets ki availability result par asar dalti hai.
             """)
 
     with sub_tabs[2]:
@@ -1286,10 +1574,10 @@ with tabs[2]:
             st.markdown("""
             **Description:** Background audio soundtrack vibe selection:
             * `random`: automatic mix.
-            * `mystery`: suspenseful, dramatic history.
-            * `epic`: loud heroic battle soundscapes.
-            * `sad`: tragic emotional sound themes (e.g. Titanic).
-            * `ancient`: retro acoustic traditional instruments.
+            * `mystery`: suspenseful, dramatic storytelling.
+            * `epic`: bold, high-energy storytelling.
+            * `sad`: emotional or reflective storytelling.
+            * `ancient`: traditional or retro acoustic instruments.
             """)
 
         with st.expander("🎥 Media Type Preference Selector", expanded=False):

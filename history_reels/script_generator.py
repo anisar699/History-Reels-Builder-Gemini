@@ -2,8 +2,50 @@ import json
 import re
 import requests
 from typing import List
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from history_reels import config
+
+
+def build_api_request_error(provider, response, error):
+    """Build a useful API error without exposing request headers or credentials."""
+    status = getattr(response, "status_code", None)
+    error_code = ""
+    if response is not None:
+        try:
+            payload = response.json()
+            detail = payload.get("error", payload) if isinstance(payload, dict) else {}
+            if isinstance(detail, dict):
+                error_code = str(detail.get("code") or detail.get("type") or "").strip()
+        except (ValueError, TypeError):
+            pass
+
+    safe_code = re.sub(r"[^A-Za-z0-9_.-]", "", error_code)[:80]
+    request_id = ""
+    if response is not None:
+        request_id = re.sub(
+            r"[^A-Za-z0-9_-]", "", str(response.headers.get("x-request-id", ""))
+        )[:128]
+    request_suffix = f" Request ID: {request_id}." if request_id else ""
+    provider_name = str(provider).strip().title() or "Provider"
+
+    if safe_code == "insufficient_quota":
+        return RuntimeError(
+            f"{provider_name} API request failed (HTTP {status}, insufficient_quota): "
+            f"API credits/quota are unavailable; check billing and project usage limits.{request_suffix}"
+        )
+    if status == 429:
+        code_label = safe_code or "rate_limit_exceeded"
+        return RuntimeError(
+            f"{provider_name} API request failed (HTTP 429, {code_label}): "
+            f"rate limit reached; retry after the limit resets.{request_suffix}"
+        )
+    if status is not None:
+        code_label = f", {safe_code}" if safe_code else ""
+        return RuntimeError(
+            f"{provider_name} API request failed (HTTP {status}{code_label}): "
+            f"the provider rejected the request.{request_suffix}"
+        )
+    return RuntimeError(f"{provider_name} network request failed: {type(error).__name__}.")
 
 def parse_json_response(content):
     if not content:
@@ -67,24 +109,49 @@ class ScriptConfig(BaseModel):
             cleaned.append("cinematic")
         return cleaned
 
+    @model_validator(mode="after")
+    def validate_script_alignment(self):
+        self.captions = [str(value).strip() for value in self.captions if str(value).strip()]
+        self.narrations = [str(value).strip() for value in self.narrations if str(value).strip()]
+        if not self.captions:
+            raise ValueError("At least one caption is required.")
+        if not self.narrations:
+            raise ValueError("At least one narration is required.")
+        if len(self.captions) != len(self.narrations):
+            raise ValueError("Captions and narrations must contain the same number of slides.")
+        return self
+
+
+def _creative_preference(settings, name: str, default: str) -> str:
+    """Return a compact, single-line creative preference from a job snapshot."""
+    value = str(getattr(settings, name, default) or default)
+    return " ".join(value.split())[:100] or default
+
+
 def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None):
     # A generation job passes a snapshot here; command-line callers without a
     # job retain the legacy configuration defaults.
     settings = settings or config
     provider = str(provider).strip().lower()
+    niche = _creative_preference(settings, "CONTENT_NICHE", "General")
+    language = _creative_preference(settings, "CONTENT_LANGUAGE", "Urdu")
+    tone = _creative_preference(settings, "CONTENT_TONE", "Engaging & Clear")
+    platform = _creative_preference(settings, "TARGET_PLATFORM", "Instagram Reels")
+    visual_style = _creative_preference(settings, "VISUAL_STYLE", "Cinematic")
+    schema_language = "the source script's original language" if is_raw_script else language
     schema_details = (
         "{\n"
-        "  \"title\": \"Short English Title (e.g., AI Revolution, Giza Pyramids)\",\n"
-        "  \"year\": \"Context or Era (e.g., 2024, Cyberpunk, 2560 BCE)\",\n"
+        "  \"title\": \"Short English Title (e.g., Better Study Habits, Home Workout)\",\n"
+        "  \"year\": \"Context or label (e.g., 2025, Beginner Guide, Fitness)\",\n"
         "  \"bg_music_vibe\": \"One of: mystery, epic, sad, ancient, modern, intense\",\n"
-        "  \"captions\": [\"Urdu text for Slide 1...\", \"Urdu text for Slide 2...\", \"...generate as many as needed to reach target duration\"],\n"
-        "  \"narrations\": [\"Urdu narration for Slide 1...\", \"Urdu narration for Slide 2...\", \"...must match number of captions\"],\n"
+        f"  \"captions\": [\"{schema_language} text for Slide 1...\", \"{schema_language} text for Slide 2...\", \"...generate as many as needed to reach target duration\"],\n"
+        f"  \"narrations\": [\"{schema_language} narration for Slide 1...\", \"{schema_language} narration for Slide 2...\", \"...must match number of captions\"],\n"
         "  \"queries\": [\n"
-        "    \"specific search queries for stock video/images matching the script flow, e.g. ['giza plateau', 'neon city', 'hacker typing', 'space shuttle', 'pharaoh statue', 'cyber security', 'ancient map', 'cinematic landscape']\"\n"
+        "    \"specific search queries for stock video/images matching the script flow, e.g. ['student studying', 'morning routine', 'healthy meal prep', 'home workout', 'travel landscape', 'smartphone editing', 'creator desk', 'cinematic city']\"\n"
         "  ],\n"
-        "  \"seo_title\": \"Hook/Title for social media (e.g., Pyramids of Giza — Secrets of the Pharaohs 🏺✨)\",\n"
-        "  \"seo_description\": \"Detailed social media caption containing Roman Urdu narrative summary and Urdu script summary\",\n"
-        "  \"seo_hashtags\": \"Space-separated string of 8-12 relevant hashtags (e.g., '#History #GizaPyramids #Egypt #UrduMysteries')\",\n"
+        "  \"seo_title\": \"Hook/Title for social media (e.g., 3 Study Habits That Actually Work ✨)\",\n"
+        f"  \"seo_description\": \"Detailed social media caption written in {language}\",\n"
+        "  \"seo_hashtags\": \"Space-separated string of 8-12 topic-relevant hashtags (e.g., '#StudyTips #Productivity #Reels #ShortVideos')\",\n"
         "  \"seo_short_caption\": \"A short punchy caption for quick copy-paste\"\n"
         "}"
     )
@@ -96,20 +163,34 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
     else:
         duration_instruction = "IMPORTANT: Generate exactly as many captions, narrations, and queries as needed."
 
+    creative_brief = (
+        "CREATIVE BRIEF (follow every item): "
+        f"Niche: {niche}. Content language: {language}. Tone: {tone}. "
+        f"Target platform: {platform}. Visual style: {visual_style}. "
+        f"Write captions and narrations exclusively in {language}; write media search queries in English; "
+        "tailor the hook, SEO copy, hashtags, pacing, and visual queries to this brief."
+    )
+    raw_creative_brief = (
+        "CREATIVE BRIEF: "
+        f"Niche: {niche}. Tone: {tone}. Target platform: {platform}. Visual style: {visual_style}. "
+        f"Preserve captions and narrations in the source script's original language; write SEO copy in {language}; "
+        "write media search queries in English and tailor them to the selected visual style."
+    )
+
     if is_raw_script:
         approx_slides = max(4, len(topic.split()) // 12)
         system_prompt = (
-            "You are an expert short-form viral video producer. Your task is to take the provided raw narrative script (which can be in Urdu, English, or Roman Urdu) "
-            "and format/split it into logical slides matching the required JSON format. Ensure captions are in Nastaliq-friendly Urdu. "
-            "CRITICAL STRICT SAFETY: The 'queries' you generate MUST be 100% strictly safe for work, historical, and family-friendly. NEVER generate any adult, NSFW, violent, or suggestive queries! "
+            "You are an expert short-form viral video producer. Your task is to take the provided raw narrative script (which may be in any supported language) "
+            "and format/split it into logical slides matching the required JSON format. Preserve the raw narration verbatim in its original language; do not translate or omit it. "
+            "CRITICAL STRICT SAFETY: The 'queries' you generate MUST be 100% strictly safe for work and family-friendly. NEVER generate any adult, NSFW, violent, or suggestive queries! "
             f"CRITICAL LENGTH RULE: You MUST divide the ENTIRE provided script into exactly {approx_slides} logical slides. Do NOT summarize or skip any part of it. Every single word of the script must be present in the narrations. "
-            f"The output must strictly follow this JSON schema:\n{schema_details}"
+            f"{raw_creative_brief} The output must strictly follow this JSON schema:\n{schema_details}"
         )
         user_prompt = f"Structure this ENTIRE raw script text into exactly {approx_slides} slides in JSON format without dropping a single sentence. Generate highly accurate, family-friendly English visual search queries for each slide. The text is:\n{topic}"
     else:
         system_prompt = (
-            "You are an expert short-form viral video producer and scriptwriter. Generate a highly engaging script configuration for Urdu short reels on ANY given topic (e.g. Tech, Facts, Horror, Motivation, History, etc.) in JSON format. "
-            f"{duration_instruction} The output must strictly follow this JSON schema:\n{schema_details}"
+            "You are an expert short-form viral video producer and scriptwriter. Generate a highly engaging script configuration for any niche in JSON format. "
+            f"{creative_brief} {duration_instruction} The output must strictly follow this JSON schema:\n{schema_details}"
         )
         user_prompt = f"Generate script configuration in valid JSON format for topic: {topic}"
 
@@ -189,11 +270,15 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
             ]
         }
         
+        response = None
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=30)
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Network error: {e}")
+            error_response = getattr(e, "response", None)
+            if error_response is None:
+                error_response = response
+            raise build_api_request_error("OpenAI", error_response, e) from e
         result = response.json()
         try:
             content = result["choices"][0]["message"]["content"]
@@ -271,7 +356,7 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
         headers = {
             "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
             "HTTP-Referer": "https://github.com/anisar699/History-Reels-Builder-Gemini",
-            "X-Title": "History Reels Builder",
+            "X-Title": "AI Reels Studio",
             "Content-Type": "application/json"
         }
         

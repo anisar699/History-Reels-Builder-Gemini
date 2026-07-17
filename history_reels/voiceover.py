@@ -2,6 +2,24 @@ import os
 import subprocess
 from history_reels.jobs import GenerationJob
 
+
+VOICE_LANGUAGE_PREFIXES = {
+    "Urdu": ("ur-",),
+    "English": ("en-",),
+    "Hindi": ("hi-",),
+    "Arabic": ("ar-",),
+    "Roman Urdu": ("ur-", "en-IN-"),
+}
+
+
+def filter_voices_for_language(voices, language):
+    """Keep Edge voices compatible with the selected content language."""
+    prefixes = VOICE_LANGUAGE_PREFIXES.get(str(language), ())
+    if not prefixes:
+        return list(voices)
+    matching = [voice for voice in voices if str(voice.get("id", "")).startswith(prefixes)]
+    return matching or list(voices)
+
 def get_audio_duration(path):
     cmd = [
         "ffprobe", "-v", "error", "-show_entries", "format=duration",

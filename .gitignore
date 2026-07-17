@@ -14,6 +14,8 @@ __pycache__/
 .agents/
 .venv/
 venv/
+.staging/
+staging_reports/
 .pytest_cache/
 .coverage
 htmlcov/

@@ -13,6 +13,12 @@ def _sanitize_key(val):
         return ""
     return val_strip
 
+def _env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
 # API Keys
 PEXELS_API_KEY = _sanitize_key(os.environ.get("PEXELS_API_KEY"))
 PIXABAY_API_KEY = _sanitize_key(os.environ.get("PIXABAY_API_KEY"))
@@ -31,65 +37,80 @@ HOME = os.path.expanduser("~")
 TEMP_DIR = os.path.join(HOME, "Downloads", "history_reels_tmp")
 TOPIC_TEMP_DIR = TEMP_DIR
 OUTPUT_DIR = os.path.join(HOME, "Pictures", "history videos")
-ASSETS_DIR = os.path.join(os.getcwd(), "assets")
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SOURCE_ASSETS_DIR = os.path.join(PROJECT_ROOT, "assets")
+ASSETS_DIR = os.environ.get(
+    "HISTORY_REELS_ASSETS_DIR",
+    SOURCE_ASSETS_DIR if os.path.isdir(SOURCE_ASSETS_DIR) else os.path.join(HOME, ".history_reels", "assets"),
+)
 URDU_FONT_NAME = "Jameel Noori Nastaleeq"
 FONT_PATH = os.path.join(ASSETS_DIR, f"{URDU_FONT_NAME}.ttf")
+CAPTION_FONT_PRESET = "Jameel Noori Nastaleeq"
+CAPTION_FONT_FAMILY = "Jameel Noori Nastaleeq"
+CAPTION_FONT_BOLD = False
+CUSTOM_FONT_PATH = ""
+CUSTOM_FONT_FAMILY = ""
+CUSTOM_FONT_BOLD = False
+CAPTION_FONT_SIZE = 52
 MUSIC_DIR = os.path.join(OUTPUT_DIR, "bg_music")
+MEDIA_QUALITY_PROFILE = "balanced"
+MIN_MEDIA_DIMENSION = 480
 
 # Global Generation Variables
-TOPIC_TITLE = "The Baghdad Battery"
-TOPIC_YEAR = "250 BCE"
-OUTPUT_NAME = "Baghdad Battery 250 BCE Asad Voice"
+TOPIC_TITLE = "Your Next Reel"
+TOPIC_YEAR = "Demo"
+OUTPUT_NAME = "Your Next Reel Demo"
 BG_MUSIC_VIBE = "mystery"
 BG_MUSIC_TRACK_INDEX = 1
 
-# Captions (using Noto Nastaliq Urdu)
-CAPTION_TEXT_1 = """کِیا آپ جانتے ہیں کہ دنیا کی پہلی بیٹری
-**دو ہزار سال پہلے** بنائی گئی تھی؟
+# Creative brief defaults. The dashboard snapshots these values into every job
+# so queued/retried renders keep the user's selected content direction.
+CONTENT_NICHE = "General"
+CONTENT_LANGUAGE = "Urdu"
+CONTENT_TONE = "Engaging & Clear"
+TARGET_PLATFORM = "Instagram Reels"
+VISUAL_STYLE = "Cinematic"
 
-1936 میں، بغداد کے قریب سے ایک قدیم مٹی کا برتن ملا،
-जिसे Baghdad Battery (Baghdad Battery) कहा जाता है।"""
+# Neutral Urdu demo captions.
+CAPTION_TEXT_1 = """اپنے خیال کو ایک مختصر
+اور دلچسپ ویڈیو میں بدلیں۔"""
 
-CAPTION_TEXT_2 = """اس برتن کے اندر **تانبے (copper) کا سلنڈر**
-اور لوہے کی راڈ موجود تھی۔"""
+CAPTION_TEXT_2 = """ایک واضح ہک، مفید معلومات
+اور مضبوط بصری انداز منتخب کریں۔"""
 
-CAPTION_TEXT_3 = """جب اس میں سرکہ یا لیموں کا رس ڈالا گیا،
-تو اس نے **بجلی پیدا کی**!"""
+CAPTION_TEXT_3 = """اپنے موضوع کے مطابق کلپس،
+آواز اور موسیقی شامل کریں۔"""
 
-CAPTION_TEXT_4 = """کِیا دو ہزار سال پہلے کے انسانوں کے پاس
-**بجلی کی ٹیکنالوجی** موجود تھی؟
-
-کمنٹس میں اپنی رائے کا اظہار کریں۔"""
+CAPTION_TEXT_4 = """اپنی اگلی ریل بنائیں
+اور اپنی آڈینس سے جڑیں۔"""
 
 # Narrations
-NARRATION_TEXT_1 = "کِیا آپ جانتے ہیں کہ دنیا کی پہلی بیٹری دو ہزار سال پہلے بنائی گئی تھی؟ 1936 میں، بغداد کے قریب سے ایک قدیم مٹی کا برتن ملا، جسے بغداد بیٹری کہا جاتا ہے۔"
-NARRATION_TEXT_2 = "اس برتن کے اندر تانبے کا سلنڈر اور لوہے کی راڈ موجود تھی۔"
-NARRATION_TEXT_3 = "جب اس میں سرکہ یا لیموں کا رس ڈالا گیا، تو اس نے بجلی پیدا کی!"
-NARRATION_TEXT_4 = "کِیا دو ہزار سال پہلے کے انسانوں کے پاس بجلی کی ٹیکنالوجی موجود تھی؟ کمنٹس میں اپنی رائے کا اظہار کریں۔"
+NARRATION_TEXT_1 = "اپنے خیال کو ایک مختصر اور دلچسپ ویڈیو میں بدلیں۔"
+NARRATION_TEXT_2 = "ایک واضح ہک، مفید معلومات اور مضبوط بصری انداز منتخب کریں۔"
+NARRATION_TEXT_3 = "اپنے موضوع کے مطابق کلپس، آواز اور موسیقی شامل کریں۔"
+NARRATION_TEXT_4 = "اپنی اگلی ریل بنائیں اور اپنی آڈینس سے جڑیں۔"
 
 FULL_SPEECH_TEXT = f"{NARRATION_TEXT_1} {NARRATION_TEXT_2} {NARRATION_TEXT_3} {NARRATION_TEXT_4}"
 
 # Default SEO
-SEO_TITLE = "The Baghdad Battery — The 2,000-Year-Old Battery 🏺⚡"
-SEO_DESCRIPTION = """1936 mein, Baghdad ke qareeb se ek qadeem mitti ka bartan mila, jise Baghdad Battery kaha jata hai.
+SEO_TITLE = "Your Next Reel — Make Your Idea Stand Out ✨"
+SEO_DESCRIPTION = """اپنے خیال کو واضح، مختصر اور دلچسپ ریل میں بدلیں۔
 
-کیا آپ جانتے ہیں کہ دنیا کی پہلی بیٹری دو ہزار سال پہلے بنائی گئی تھی؟ اس برتن کے اندر تانبے کا سلنڈر اور لوہے کی راڈ موجود تھی۔ 
+ایک مضبوط ہک، موزوں بصری کلپس اور واضح پیغام آپ کے موضوع کو بہتر انداز میں پیش کرتے ہیں۔
 
-جب اس میں سرکہ یا لیموں کا رس ڈالا گیا، تو اس نے بجلی پیدا کی! کیا دو ہزار سال پہلے کے انسانوں کے پاس بجلی کی ٹیکنالوجی موجود تھی؟ یا یہ محض ایک اتفاق تھا؟
-
-Comments mein apni rai ka izhaar karein!"""
-SEO_HASHTAGS = "#History #BaghdadBattery #UrduHistory #Mysteries #Unsolved #HistoricalFacts #ReelsPakistan #HistoryBuff #AncientTechnology #ScienceMysteries #UrduScript"
-SEO_SHORT_CAPTION = "Baghdad Battery 2000 saal purani hai aur isne sach mein electricity generate ki thi. Qadeem technology ya ittefaq? #History #Urdu #Mysteries"
+اپنی رائے کمنٹس میں ضرور بتائیں!"""
+SEO_HASHTAGS = "#Reels #ShortVideos #ContentCreator #VideoContent #CreativeIdeas #SocialMedia #UrduContent #DigitalCreator"
+SEO_SHORT_CAPTION = "اپنے خیال کو ایک دلچسپ ریل میں بدلیں۔ #Reels #ShortVideos #ContentCreator"
 
 QUERIES = [
-    "clay jar",
-    "iraq desert",
-    "copper cylinder",
-    "iron rod",
-    "pouring liquid",
-    "voltmeter electricity",
-    "ancient science",
-    "thinking man"
+    "creative workspace",
+    "smartphone video creation",
+    "social media content",
+    "ideas notebook",
+    "studio lights",
+    "editing timeline",
+    "audience engagement",
+    "creator success"
 ]
 FPS = 25
 CROSSFADE_DUR = 0.5
@@ -109,6 +130,10 @@ VIDEO_HEIGHT = 1280
 SHOW_PROGRESS_BAR = True
 PROGRESS_BAR_COLOR = "gold"
 PROGRESS_BAR_HEIGHT = 8
+MAX_JOB_ATTEMPTS = 2
+JOB_WORKER_MODE = os.environ.get("JOB_WORKER_MODE", "thread").strip().lower()
+DASHBOARD_REQUIRE_AUTH = _env_flag("DASHBOARD_REQUIRE_AUTH")
+DASHBOARD_ALLOW_SESSION_KEY_OVERRIDE = _env_flag("DASHBOARD_ALLOW_SESSION_KEY_OVERRIDE")
 SHOW_WATERMARK = False
 WATERMARK_SIZE = 100
 WATERMARK_OPACITY = 0.5
@@ -117,6 +142,10 @@ VIDEO_TRANSITION = "fade"
 OLLAMA_MODEL = "qwen2.5:3b"
 AUDIO_DUCKING = True
 VOICE_MASTERING = True
+AUDIO_NORMALIZATION = True
+AUDIO_TARGET_LUFS = -16.0
+AUDIO_TRUE_PEAK_DB = -1.5
+AUDIO_LOUDNESS_RANGE = 11.0
 LAST_ERROR_MESSAGE = ""
 CINEMATIC_GRAIN = False
 CAMERA_SHAKE = False
@@ -126,7 +155,9 @@ TRANSITION_OFFSETS = []
 VOICE_PITCH = "default"
 AMBIENT_SOUND = None
 COLOR_FILTER = None
-ALLOWED_SOURCES = ["pexels", "pixabay", "google", "pinterest", "wikimedia_image"]
+# Pinterest search results often contain unrelated decorative graphics rather
+# than usable editorial media. Keep it out of normal reel generation.
+ALLOWED_SOURCES = ["pexels", "pixabay", "google", "wikimedia_image"]
 INTRO_BUMPER = None
 OUTRO_BUMPER = None
 UNSPLASH_API_KEY = _sanitize_key(os.environ.get("UNSPLASH_API_KEY"))

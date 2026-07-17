@@ -6,9 +6,9 @@ MUSIC_DIR = os.path.join(HOME, "Pictures", "history videos", "bg_music")
 
 CATEGORIES = {
     "mystery": "cinematic mystery background music no copyright",
-    "epic": "epic orchestral battle history music no copyright",
-    "sad": "sad emotional history background music no copyright",
-    "ancient": "ancient middle eastern greek history music no copyright"
+    "epic": "epic orchestral cinematic background music no copyright",
+    "sad": "sad emotional cinematic background music no copyright",
+    "ancient": "traditional acoustic cinematic background music no copyright"
 }
 
 def download_music():

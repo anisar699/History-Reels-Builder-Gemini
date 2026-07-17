@@ -1,7 +1,8 @@
-﻿streamlit>=1.30.0
-requests>=2.31.0
-pandas>=2.0.0
-openpyxl>=3.1.0
-python-dotenv>=1.0.0
-edge-tts>=6.1.9
-pydantic>=2.0.0
+streamlit==1.59.2
+requests==2.34.2
+pandas==3.0.3
+openpyxl==3.1.5
+python-dotenv==1.2.2
+edge-tts==7.2.8
+pydantic==2.13.4
+fonttools==4.61.1
