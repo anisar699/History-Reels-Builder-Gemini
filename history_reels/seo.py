@@ -49,4 +49,5 @@ CREDITS & ATTRIBUTIONS:
 """
     seo_path = os.path.join(job.TOPIC_TEMP_DIR, "output.txt")
     os.makedirs(job.TOPIC_TEMP_DIR, exist_ok=True)
+    with open(seo_path, "w", encoding="utf-8") as f:
         f.write(seo_content)
