@@ -36,13 +36,13 @@ desktop_dir = os.path.join(user_profile, "Desktop")
 shortcut_path = os.path.join(desktop_dir, "Start Reels Builder.bat")
 current_dir = os.path.abspath(os.path.dirname(__file__))
 
-bat_content = f\"\"\"@echo off
+bat_content = f"""@echo off
 title AI Reels Builder
 echo Starting AI Content Engine...
 cd /d "{current_dir}"
 python -m streamlit run app.py
 pause
-\"\"\"
+"""
 with open(shortcut_path, "w", encoding="utf-8") as f:
     f.write(bat_content)
 print(f"✅ Shortcut created at: {shortcut_path}")

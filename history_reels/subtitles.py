@@ -1,5 +1,5 @@
 import os
-from history_reels import config
+from history_reels.jobs import GenerationJob
 
 def format_ass_time(seconds):
     h = int(seconds // 3600)
@@ -24,20 +24,20 @@ def markdown_to_ass(text):
             ass_text += part
     return ass_text
 
-def write_ass_subtitles(ass_path):
-    start_times = [0.0] + config.SLIDE_TIMINGS[:-1]
-    end_times = config.SLIDE_TIMINGS
-    captions = getattr(config, "CAPTIONS", [])
+def write_ass_subtitles(ass_path, job: GenerationJob):
+    start_times = [0.0] + job.SLIDE_TIMINGS[:-1]
+    end_times = job.SLIDE_TIMINGS
+    captions = getattr(job, "CAPTIONS", [])
     if not captions:
-        captions = [getattr(config, f"CAPTION_TEXT_{i}", "") for i in range(1, 5)]
+        captions = [getattr(job, f"CAPTION_TEXT_{i}", "") for i in range(1, 5)]
     
     lines = []
     lines.append("[Script Info]")
     lines.append("Title: History Reel")
     lines.append("ScriptType: v4.00+")
     lines.append("WrapStyle: 0")
-    width = getattr(config, "VIDEO_WIDTH", 720)
-    height = getattr(config, "VIDEO_HEIGHT", 1280)
+    width = getattr(job, "VIDEO_WIDTH", 720)
+    height = getattr(job, "VIDEO_HEIGHT", 1280)
     margin_v = 450 if height == 1280 else int(height * 0.15)
     
     lines.append(f"PlayResX: {width}")
@@ -45,7 +45,7 @@ def write_ass_subtitles(ass_path):
     lines.append("")
     lines.append("[V4+ Styles]")
     lines.append("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding")
-    font_name = getattr(config, "URDU_FONT_NAME", "Jameel Noori Nastaleeq")
+    font_name = getattr(job, "URDU_FONT_NAME", "Jameel Noori Nastaleeq")
     lines.append(f"Style: Default,{font_name},28,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,2,2,30,30,{margin_v},1")
     lines.append("")
     lines.append("[Events]")

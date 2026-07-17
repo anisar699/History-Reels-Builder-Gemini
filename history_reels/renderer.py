@@ -1,6 +1,6 @@
 import os
 import subprocess
-from history_reels import config
+from history_reels.jobs import GenerationJob
 from history_reels.subtitles import write_ass_subtitles
 
 def get_video_dimensions(path):
@@ -16,30 +16,30 @@ def get_video_dimensions(path):
         print(f"Warning: Could not read dimensions of {path}: {e}")
         return 0, 0
 
-def build_video_frames(voice_dur):
+def build_video_frames(job: GenerationJob, voice_dur):
     print("Extracting clips from source videos...")
     
-    target_clip_dur = getattr(config, "CLIP_DURATION_TARGET", 5.0)
-    divisor = max(0.1, target_clip_dur - config.CROSSFADE_DUR)
-    estimated_clips = int(round((voice_dur - config.CROSSFADE_DUR) / divisor))
+    target_clip_dur = getattr(job, "CLIP_DURATION_TARGET", 5.0)
+    divisor = max(0.1, target_clip_dur - job.CROSSFADE_DUR)
+    estimated_clips = int(round((voice_dur - job.CROSSFADE_DUR) / divisor))
     
     repeats = 2 if target_clip_dur < 4.0 else 1
-    max_available = len(config.QUERIES) * repeats
+    max_available = len(job.QUERIES) * repeats
     num_clips = max(4, min(estimated_clips, max_available))
     
-    config.NUM_CLIPS = num_clips
+    job.NUM_CLIPS = num_clips
     
-    total_visual_dur = voice_dur + (config.NUM_CLIPS - 1) * config.CROSSFADE_DUR
-    clip_dur = total_visual_dur / config.NUM_CLIPS
-    print(f"Dynamic clip duration: {clip_dur:.2f}s (Target: {target_clip_dur:.2f}s, Cuts: {config.NUM_CLIPS}) (Total video duration: {voice_dur:.2f}s)")
+    total_visual_dur = voice_dur + (job.NUM_CLIPS - 1) * job.CROSSFADE_DUR
+    clip_dur = total_visual_dur / job.NUM_CLIPS
+    print(f"Dynamic clip duration: {clip_dur:.2f}s (Target: {target_clip_dur:.2f}s, Cuts: {job.NUM_CLIPS}) (Total video duration: {voice_dur:.2f}s)")
     
     clips = []
-    for i in range(1, config.NUM_CLIPS + 1):
-        raw_path_mp4 = os.path.join(config.TOPIC_TEMP_DIR, f"raw_clip{i}.mp4")
-        raw_path_jpg = os.path.join(config.TOPIC_TEMP_DIR, f"raw_clip{i}.jpg")
-        raw_path_png = os.path.join(config.TOPIC_TEMP_DIR, f"raw_clip{i}.png")
+    for i in range(1, job.NUM_CLIPS + 1):
+        raw_path_mp4 = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{i}.mp4")
+        raw_path_jpg = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{i}.jpg")
+        raw_path_png = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{i}.png")
         
-        clip_path = os.path.join(config.TOPIC_TEMP_DIR, f"clip{i}.mp4")
+        clip_path = os.path.join(job.TOPIC_TEMP_DIR, f"clip{i}.mp4")
         clips.append(clip_path)
         
         if os.path.exists(raw_path_mp4):
@@ -50,12 +50,12 @@ def build_video_frames(voice_dur):
                 # Create a black placeholder clip
                 cmd = [
                     "ffmpeg", "-y", "-f", "lavfi", "-i",
-                    f"color=c=black:s={config.VIDEO_WIDTH}x{config.VIDEO_HEIGHT}:d={clip_dur:.3f}:r={config.FPS}",
+                    f"color=c=black:s={job.VIDEO_WIDTH}x{job.VIDEO_HEIGHT}:d={clip_dur:.3f}:r={job.FPS}",
                     "-an", clip_path
                 ]
                 subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)
                 continue
-            target_aspect = config.VIDEO_WIDTH / config.VIDEO_HEIGHT
+            target_aspect = job.VIDEO_WIDTH / job.VIDEO_HEIGHT
             if (w / h) > target_aspect:
                 crop_h = h
                 crop_w = int(h * target_aspect)
@@ -72,10 +72,10 @@ def build_video_frames(voice_dur):
             offset_x = max(0, (w - crop_w) // 2)
             offset_y = max(0, (h - crop_h) // 2)
                 
-            vf = f"crop={crop_w}:{crop_h}:{offset_x}:{offset_y},scale={config.VIDEO_WIDTH}:{config.VIDEO_HEIGHT}"
+            vf = f"crop={crop_w}:{crop_h}:{offset_x}:{offset_y},scale={job.VIDEO_WIDTH}:{job.VIDEO_HEIGHT}"
             cmd = [
                 "ffmpeg", "-y", "-ss", "0.0", "-stream_loop", "-1", "-i", raw_path_mp4, "-t", f"{clip_dur:.3f}",
-                "-vf", vf, "-an", "-r", str(config.FPS), clip_path
+                "-vf", vf, "-an", "-r", str(job.FPS), clip_path
             ]
             subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)
             
@@ -85,19 +85,19 @@ def build_video_frames(voice_dur):
             if not os.path.exists(img_path):
                 raise FileNotFoundError(f"Error: No video or image clip found for index {i}")
                 
-            scale_w = int(config.VIDEO_WIDTH * 2)
-            scale_h = int(config.VIDEO_HEIGHT * 2)
-            vf_zoom = f"scale={scale_w}:{scale_h},zoompan=z='zoom+0.0005':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={int(config.FPS * clip_dur)}:s={config.VIDEO_WIDTH}x{config.VIDEO_HEIGHT},fps={config.FPS}"
+            scale_w = int(job.VIDEO_WIDTH * 2)
+            scale_h = int(job.VIDEO_HEIGHT * 2)
+            vf_zoom = f"scale={scale_w}:{scale_h},zoompan=z='zoom+0.0005':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={int(job.FPS * clip_dur)}:s={job.VIDEO_WIDTH}x{job.VIDEO_HEIGHT},fps={job.FPS}"
             cmd = [
                 "ffmpeg", "-y", "-loop", "1", "-i", img_path, "-t", f"{clip_dur:.3f}",
-                "-vf", vf_zoom, "-an", "-r", str(config.FPS), clip_path
+                "-vf", vf_zoom, "-an", "-r", str(job.FPS), clip_path
             ]
             subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)
         
     print("Crossfading clips...")
-    silent_temp = os.path.join(config.TOPIC_TEMP_DIR, "silent_temp.mp4")
+    silent_temp = os.path.join(job.TOPIC_TEMP_DIR, "silent_temp.mp4")
     
-    if config.NUM_CLIPS <= 1:
+    if job.NUM_CLIPS <= 1:
         import shutil
         if clips:
             shutil.copy2(clips[0], silent_temp)
@@ -105,14 +105,14 @@ def build_video_frames(voice_dur):
         
     filter_parts = []
     last_label = "0:v"
-    curr_offset = clip_dur - config.CROSSFADE_DUR
-    config.TRANSITION_OFFSETS = []
+    curr_offset = clip_dur - job.CROSSFADE_DUR
+    job.TRANSITION_OFFSETS = []
     
     transition_style = getattr(config, "VIDEO_TRANSITION", "fade").lower()
     allowed_transitions = ["fade", "slideleft", "slideright", "slideup", "slidedown", "wipeleft", "wiperight", "zoomin", "dissolve", "pixelize", "radial"]
     
-    for i in range(1, config.NUM_CLIPS):
-        config.TRANSITION_OFFSETS.append(curr_offset)
+    for i in range(1, job.NUM_CLIPS):
+        job.TRANSITION_OFFSETS.append(curr_offset)
         out_label = f"v{i}"
         t_style = transition_style
         if t_style == "random":
@@ -121,9 +121,9 @@ def build_video_frames(voice_dur):
         elif t_style not in allowed_transitions:
             t_style = "fade"
             
-        filter_parts.append(f"[{last_label}][{i}:v]xfade=transition={t_style}:duration={config.CROSSFADE_DUR}:offset={curr_offset:.3f}[{out_label}]")
+        filter_parts.append(f"[{last_label}][{i}:v]xfade=transition={t_style}:duration={job.CROSSFADE_DUR}:offset={curr_offset:.3f}[{out_label}]")
         last_label = out_label
-        curr_offset += max(0.1, clip_dur - config.CROSSFADE_DUR)
+        curr_offset += max(0.1, clip_dur - job.CROSSFADE_DUR)
         
     filter_complex = ";".join(filter_parts)
     
@@ -132,12 +132,12 @@ def build_video_frames(voice_dur):
         cmd_fade.extend(["-i", c])
     cmd_fade.extend([
         "-filter_complex", filter_complex,
-        "-map", f"[{last_label}]", "-r", str(config.FPS), silent_temp
+        "-map", f"[{last_label}]", "-r", str(job.FPS), silent_temp
     ])
     subprocess.run(cmd_fade, check=True, stdin=subprocess.DEVNULL)
 
-def setup_fontconfig():
-    fonts_dir = os.path.join(config.OUTPUT_DIR, "fonts")
+def setup_fontconfig(job: GenerationJob):
+    fonts_dir = os.path.join(job.OUTPUT_DIR, "fonts")
     fonts_dir_clean = fonts_dir.replace("\\", "/")
     
     fonts_conf_content = f"""<?xml version="1.0"?>
@@ -146,15 +146,15 @@ def setup_fontconfig():
     <dir>{fonts_dir_clean}</dir>
 </fontconfig>
 """
-    fonts_conf_path = os.path.join(config.TOPIC_TEMP_DIR, "fonts.conf")
+    fonts_conf_path = os.path.join(job.TOPIC_TEMP_DIR, "fonts.conf")
     with open(fonts_conf_path, "w", encoding="utf-8") as f:
         f.write(fonts_conf_content)
         
     os.environ["FONTCONFIG_FILE"] = fonts_conf_path
     print(f"Fontconfig local file configured: {fonts_conf_path}")
 
-def generate_whoosh_sound():
-    whoosh_path = os.path.join(config.TOPIC_TEMP_DIR, "whoosh.wav")
+def generate_whoosh_sound(job: GenerationJob):
+    whoosh_path = os.path.join(job.TOPIC_TEMP_DIR, "whoosh.wav")
     if os.path.exists(whoosh_path):
         return whoosh_path
     cmd = [
@@ -166,16 +166,16 @@ def generate_whoosh_sound():
     subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)
     return whoosh_path
 
-def run_ffmpeg(voice_dur):
+def run_ffmpeg(job: GenerationJob, voice_dur):
     print("Mixing background music and voiceover...")
-    drone_wav = os.path.join(config.TOPIC_TEMP_DIR, "drone.wav")
-    music_mp3 = os.path.join(config.MUSIC_DIR, f"{config.BG_MUSIC_VIBE}_{config.BG_MUSIC_TRACK_INDEX}.mp3")
-    voice_mp3 = os.path.join(config.TOPIC_TEMP_DIR, "voice.mp3")
+    drone_wav = os.path.join(job.TOPIC_TEMP_DIR, "drone.wav")
+    music_mp3 = os.path.join(job.MUSIC_DIR, f"{job.BG_MUSIC_VIBE}_{job.BG_MUSIC_TRACK_INDEX}.mp3")
+    voice_mp3 = os.path.join(job.TOPIC_TEMP_DIR, "voice.mp3")
     
     # Mix audio with dynamic filters
-    ducking = getattr(config, "AUDIO_DUCKING", True)
-    mastering = getattr(config, "VOICE_MASTERING", True)
-    trans_sfx = getattr(config, "TRANSITION_SFX", False)
+    ducking = getattr(job, "AUDIO_DUCKING", True)
+    mastering = getattr(job, "VOICE_MASTERING", True)
+    trans_sfx = getattr(job, "TRANSITION_SFX", False)
     
     # 1. Voice processing chain
     voice_filter = f"[1:a]atrim=0:{voice_dur:.3f},asetpts=PTS-STARTPTS"
@@ -190,7 +190,7 @@ def run_ffmpeg(voice_dur):
     
     # 3. Filter complex composition
     filter_parts = []
-    use_whooshes = trans_sfx and bool(getattr(config, "TRANSITION_OFFSETS", []))
+    use_whooshes = trans_sfx and bool(getattr(job, "TRANSITION_OFFSETS", []))
     whoosh_input_index = 2
     
     if ducking:
@@ -203,7 +203,7 @@ def run_ffmpeg(voice_dur):
         filter_parts.append(f"{music_filter}[music]")
         
     if use_whooshes:
-        offsets = config.TRANSITION_OFFSETS
+        offsets = job.TRANSITION_OFFSETS
         num_t = len(offsets)
         filter_parts.append(f"[{whoosh_input_index}:a]asplit={num_t}" + "".join(f"[w{j}]" for j in range(num_t)))
         for j, off in enumerate(offsets):
@@ -214,7 +214,7 @@ def run_ffmpeg(voice_dur):
     else:
         filter_parts.append("[music][voice]amix=inputs=2:duration=first:dropout_transition=2[pre_out]")
         
-    ambient_sound = getattr(config, "AMBIENT_SOUND", None)
+    ambient_sound = getattr(job, "AMBIENT_SOUND", None)
     if ambient_sound:
         if ambient_sound == "rain":
             filter_parts.append(f"anoisesrc=a=0.15:c=pink:d={voice_dur:.3f},lowpass=f=1200[amb];[pre_out][amb]amix=inputs=2:duration=first:dropout_transition=2[out]")
@@ -233,7 +233,7 @@ def run_ffmpeg(voice_dur):
         "ffmpeg", "-y", "-stream_loop", "-1", "-i", music_mp3, "-i", voice_mp3
     ]
     if use_whooshes:
-        whoosh_wav = generate_whoosh_sound()
+        whoosh_wav = generate_whoosh_sound(job)
         cmd_audio.extend(["-i", whoosh_wav])
         
     cmd_audio.extend([
@@ -244,23 +244,23 @@ def run_ffmpeg(voice_dur):
     
     # Write ASS subtitle file
     ass_filename = "subtitles.ass"
-    ass_path = os.path.join(config.TOPIC_TEMP_DIR, ass_filename)
-    write_ass_subtitles(ass_path)
+    ass_path = os.path.join(job.TOPIC_TEMP_DIR, ass_filename)
+    write_ass_subtitles(ass_path, job)
     
     # Configure Fontconfig
-    setup_fontconfig()
+    setup_fontconfig(job)
     
     print("Merging audio and video with color grading, fades, ASS subtitles, and custom overlays...")
-    output_mp4 = os.path.join(config.TOPIC_TEMP_DIR, "output.mp4")
+    output_mp4 = os.path.join(job.TOPIC_TEMP_DIR, "output.mp4")
     
     # Build filter complex for video overlays
     filter_parts = []
     
     # 1. Base video grading & subtitles with upgrades
-    camera_shake = getattr(config, "CAMERA_SHAKE", False)
-    offsets = getattr(config, "TRANSITION_OFFSETS", [])
+    camera_shake = getattr(job, "CAMERA_SHAKE", False)
+    offsets = getattr(job, "TRANSITION_OFFSETS", [])
     
-    color_filter = getattr(config, "COLOR_FILTER", None)
+    color_filter = getattr(job, "COLOR_FILTER", None)
     if color_filter == "horror":
         v_filters = ["eq=contrast=1.3:brightness=-0.1:saturation=0.5,colorbalance=rs=-0.2:bs=0.2"]
     elif color_filter == "cyberpunk":
@@ -276,26 +276,26 @@ def run_ffmpeg(voice_dur):
         in_trans_parts = [f"between(t,{off-0.12:.3f},{off+0.12:.3f})" for off in offsets]
         in_trans = "+".join(in_trans_parts)
         v_filters.append(f"crop=w=iw-24:h=ih-24:x='12+12*sin(2*PI*t*16)*({in_trans})':y='12+12*cos(2*PI*t*16)*({in_trans})'")
-        v_filters.append(f"scale={config.VIDEO_WIDTH}:{config.VIDEO_HEIGHT}")
+        v_filters.append(f"scale={job.VIDEO_WIDTH}:{job.VIDEO_HEIGHT}")
         
-    use_grain = getattr(config, "CINEMATIC_GRAIN", False)
+    use_grain = getattr(job, "CINEMATIC_GRAIN", False)
     if use_grain:
         v_filters.append("noise=alls=8:allf=t+u")
         
     v_filters.append(f"fade=t=in:st=0:d=0.3")
     v_filters.append(f"fade=t=out:st={voice_dur-0.5:.3f}:d=0.5")
     
-    wm_text = getattr(config, "WATERMARK_TEXT", "")
+    wm_text = getattr(job, "WATERMARK_TEXT", "")
     if wm_text:
         safe_text = wm_text.replace("'", "'\\\\''")
         safe_text = safe_text.replace(":", "\\\\:")
         safe_text = safe_text.replace(";", "\\\\;")
-        font_clean = config.FONT_PATH.replace("\\", "/").replace(":", "\\:")
-        font_arg = f":fontfile='{font_clean}'" if os.path.exists(config.FONT_PATH) else ""
+        font_clean = job.FONT_PATH.replace("\\", "/").replace(":", "\\:")
+        font_arg = f":fontfile='{font_clean}'" if os.path.exists(job.FONT_PATH) else ""
         v_filters.append(f"drawtext=text='{safe_text}':fontsize=22:fontcolor=white@0.6{font_arg}:x=(w-tw)/2:y=h-70")
         
-    ass_path_clean = os.path.join(config.TOPIC_TEMP_DIR, "subtitles.ass").replace("\\", "/").replace(":", "\\:")
-    font_dir_clean = os.path.dirname(os.path.abspath(config.FONT_PATH)).replace("\\", "/").replace(":", "\\:")
+    ass_path_clean = os.path.join(job.TOPIC_TEMP_DIR, "subtitles.ass").replace("\\", "/").replace(":", "\\:")
+    font_dir_clean = os.path.dirname(os.path.abspath(job.FONT_PATH)).replace("\\", "/").replace(":", "\\:")
     v_filters.append(f"subtitles='{ass_path_clean}':fontsdir='{font_dir_clean}'")
     
     base_v_filter = ",".join(v_filters)
@@ -303,24 +303,24 @@ def run_ffmpeg(voice_dur):
     last_v_label = "[v_graded]"
     
     # 2. Progress Bar Overlay
-    show_bar = getattr(config, "SHOW_PROGRESS_BAR", True)
-    bar_color = getattr(config, "PROGRESS_BAR_COLOR", "gold").lower()
-    bar_height = getattr(config, "PROGRESS_BAR_HEIGHT", 8)
+    show_bar = getattr(job, "SHOW_PROGRESS_BAR", True)
+    bar_color = getattr(job, "PROGRESS_BAR_COLOR", "gold").lower()
+    bar_height = getattr(job, "PROGRESS_BAR_HEIGHT", 8)
     if show_bar:
         safe_voice_dur = max(0.1, voice_dur)
-        filter_parts.append(f"color=c={bar_color}:s={config.VIDEO_WIDTH}x{bar_height}:d={voice_dur:.3f}[bar]")
+        filter_parts.append(f"color=c={bar_color}:s={job.VIDEO_WIDTH}x{bar_height}:d={voice_dur:.3f}[bar]")
         filter_parts.append(f"{last_v_label}[bar]overlay=-w+(w/{safe_voice_dur:.3f})*t:main_h-overlay_h[v_bar]")
         last_v_label = "[v_bar]"
         
     # 3. Watermark Logo Overlay
-    show_logo = getattr(config, "SHOW_WATERMARK", False)
-    logo_path = os.path.join(config.OUTPUT_DIR, "watermark.png")
+    show_logo = getattr(job, "SHOW_WATERMARK", False)
+    logo_path = os.path.join(job.OUTPUT_DIR, "watermark.png")
     has_logo = show_logo and os.path.exists(logo_path)
     
     if has_logo:
-        logo_size = getattr(config, "WATERMARK_SIZE", 100)
-        logo_opacity = getattr(config, "WATERMARK_OPACITY", 0.5)
-        logo_pos = getattr(config, "WATERMARK_POSITION", "main_w-overlay_w-20:20")
+        logo_size = getattr(job, "WATERMARK_SIZE", 100)
+        logo_opacity = getattr(job, "WATERMARK_OPACITY", 0.5)
+        logo_pos = getattr(job, "WATERMARK_POSITION", "main_w-overlay_w-20:20")
         
         # Scale logo and apply opacity
         filter_parts.append(f"[2:v]scale={logo_size}:-1,format=yuva420p,colorchannelmixer=aa={logo_opacity:.2f}[logo]")
@@ -341,5 +341,5 @@ def run_ffmpeg(voice_dur):
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-preset", "fast",
         "-c:a", "aac", "-b:a", "192k", "output.mp4"
     ])
-    subprocess.run(cmd_merge, check=True, cwd=config.TOPIC_TEMP_DIR, stdin=subprocess.DEVNULL)
+    subprocess.run(cmd_merge, check=True, cwd=job.TOPIC_TEMP_DIR, stdin=subprocess.DEVNULL)
 

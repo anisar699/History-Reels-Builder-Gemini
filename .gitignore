@@ -6,6 +6,17 @@ __pycache__/
 
 # Sensitive API config
 .env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Local Codex state and Python environments
+.agents/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Local data & temp files
 history_reels_tmp/

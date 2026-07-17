@@ -8,6 +8,7 @@ import streamlit as st
 
 from history_reels import config
 from history_reels.cli import generate_video_for_topic
+from history_reels.jobs import create_generation_job
 
 def detect_ollama_models() -> list[str]:
     import requests
@@ -1005,12 +1006,16 @@ with tabs[0]:
                     else:
                         print(f"\n[UI Run] Initiating Fallback Mode...")
                         
-                    config.reset_per_run_state()
+                    # Capture this run's settings before starting expensive work.
+                    # Each job owns its own media tracking, timing data, and temp
+                    # directory, so a second Streamlit session cannot overwrite it.
+                    job = create_generation_job(config)
+                    print(f"[Job {job.job_id}] Workspace: {job.TOPIC_TEMP_DIR}")
                     try:
                         if mode == "Fully Custom Script (Manual Override)":
-                            success = generate_video_for_topic(None, provider=provider, manual_script_data=manual_script_data)
+                            success = generate_video_for_topic(None, provider=provider, manual_script_data=manual_script_data, job=job)
                         elif mode == "AI Script Formatter (Paste Raw Text)":
-                            success = generate_video_for_topic(t, provider=provider, is_raw_script=True)
+                            success = generate_video_for_topic(t, provider=provider, is_raw_script=True, job=job)
                         elif mode == "Live News & RSS Scraping":
                             from history_reels.news_scraper import scrape_article_text
                             print(f"Scraping clean text content from URL: {t['link']}...")
@@ -1020,14 +1025,14 @@ with tabs[0]:
                                 success = False
                             else:
                                 print(f"Scraped content successfully (Length: {len(scraped_text)} characters).")
-                                success = generate_video_for_topic(scraped_text, provider=provider, is_raw_script=True)
+                                success = generate_video_for_topic(scraped_text, provider=provider, is_raw_script=True, job=job)
                         elif mode == "CSV/Excel Batch Upload":
                             if t["type"] == "manual_script":
-                                success = generate_video_for_topic(None, provider=provider, manual_script_data=t["data"])
+                                success = generate_video_for_topic(None, provider=provider, manual_script_data=t["data"], job=job)
                             else:
-                                success = generate_video_for_topic(t["data"], provider=provider)
+                                success = generate_video_for_topic(t["data"], provider=provider, job=job)
                         else:
-                            success = generate_video_for_topic(t, provider=provider)
+                            success = generate_video_for_topic(t, provider=provider, job=job)
                     except Exception as e:
                         st.error(f"Error generating video for topic: {e}")
                         success = False
@@ -1037,10 +1042,9 @@ with tabs[0]:
                         st.success(f"Successfully generated Video for Topic: '{t_name or 'Baghdad Battery'}'!")
                         
                         # Find and display the generated video + SEO package in UI
-                        output_name = config.OUTPUT_NAME
-                        
-                        video_path = os.path.join(config.OUTPUT_DIR, f"{output_name}.mp4")
-                        txt_path = os.path.join(config.OUTPUT_DIR, f"{output_name}.txt")
+                        output_name = job.OUTPUT_NAME
+                        video_path = job.video_path
+                        txt_path = job.seo_path
                         
                         # Render output column
                         st.markdown("### 🎯 Newly Created Deliverable")
@@ -1057,7 +1061,7 @@ with tabs[0]:
                             else:
                                 st.warning("SEO Package text file not resolved.")
                     else:
-                        err_msg = getattr(config, "LAST_ERROR_MESSAGE", "Unknown build error.")
+                        err_msg = job.last_error or "Unknown build error."
                         st.error(f"❌ Failed compilation for Topic: '{t_name or 'Baghdad Battery'}'\n\n**Reason:** {err_msg}")
 
 # Tab 2: Gallery Output View

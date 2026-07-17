@@ -11,6 +11,7 @@ try:
 except Exception:
     pass
 from history_reels import config
+from history_reels.jobs import GenerationJob, create_generation_job
 from history_reels.script_generator import fetch_ai_script
 from history_reels.stock_media import download_clip_for_query
 from history_reels.voiceover import generate_voiceover
@@ -26,30 +27,30 @@ def download_file(url, path):
         for chunk in r.iter_content(chunk_size=8192):
             f.write(chunk)
 
-def ensure_assets():
+def ensure_assets(job: GenerationJob):
     # Make sure target directories exist
-    os.makedirs(os.path.dirname(config.FONT_PATH), exist_ok=True)
-    os.makedirs(config.MUSIC_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(job.FONT_PATH), exist_ok=True)
+    os.makedirs(job.MUSIC_DIR, exist_ok=True)
     
     # 1. Ensure Urdu Font exists
-    font_name = getattr(config, "URDU_FONT_NAME", "Jameel Noori Nastaleeq")
-    config.FONT_PATH = os.path.join(config.ASSETS_DIR, f"{font_name}.ttf")
+    font_name = getattr(job, "URDU_FONT_NAME", "Jameel Noori Nastaleeq")
+    job.FONT_PATH = os.path.join(job.ASSETS_DIR, f"{font_name}.ttf")
     
-    if not os.path.exists(config.FONT_PATH):
-        print(f"Urdu Font '{font_name}' not found at {config.FONT_PATH}. Auto-downloading...")
+    if not os.path.exists(job.FONT_PATH):
+        print(f"Urdu Font '{font_name}' not found at {job.FONT_PATH}. Auto-downloading...")
         font_urls = {
             "Noto Nastaliq Urdu": "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoNastaliqUrdu/NotoNastaliqUrdu-Bold.ttf",
             "Jameel Noori Nastaleeq": "https://raw.githubusercontent.com/abid-mujtaba/ttf-jameel-noori-nastaleeq/master/Jameel%20Noori%20Nastaleeq.ttf"
         }
         font_url = font_urls.get(font_name, font_urls["Jameel Noori Nastaleeq"])
         try:
-            download_file(font_url, config.FONT_PATH)
+            download_file(font_url, job.FONT_PATH)
             print(f"Successfully downloaded {font_name} Font!")
         except Exception as e:
             print(f"Failed to download Urdu font: {e}")
     # 2. Ensure Background Music pool exists
-    track_name = f"{config.BG_MUSIC_VIBE}_{config.BG_MUSIC_TRACK_INDEX}"
-    target_music_path = os.path.join(config.MUSIC_DIR, f"{track_name}.mp3")
+    track_name = f"{job.BG_MUSIC_VIBE}_{job.BG_MUSIC_TRACK_INDEX}"
+    target_music_path = os.path.join(job.MUSIC_DIR, f"{track_name}.mp3")
     
     if not os.path.exists(target_music_path):
         print(f"Background music track '{track_name}.mp3' not found. Auto-downloading...")
@@ -77,21 +78,21 @@ def ensure_assets():
             except Exception as ex:
                 print(f"Failed to generate silent fallback: {ex}")
 
-def check_inputs():
-    os.makedirs(config.TOPIC_TEMP_DIR, exist_ok=True)
-    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+def check_inputs(job: GenerationJob):
+    os.makedirs(job.TOPIC_TEMP_DIR, exist_ok=True)
+    os.makedirs(job.OUTPUT_DIR, exist_ok=True)
     
-    ensure_assets()
+    ensure_assets(job)
     
-    if not os.path.exists(config.FONT_PATH):
-        print(f"Error: Urdu Font not found at {config.FONT_PATH}")
+    if not os.path.exists(job.FONT_PATH):
+        print(f"Error: Urdu Font not found at {job.FONT_PATH}")
         return False
         
-    music_mp3 = os.path.join(config.MUSIC_DIR, f"{config.BG_MUSIC_VIBE}_{config.BG_MUSIC_TRACK_INDEX}.mp3")
+    music_mp3 = os.path.join(job.MUSIC_DIR, f"{job.BG_MUSIC_VIBE}_{job.BG_MUSIC_TRACK_INDEX}.mp3")
     if not os.path.exists(music_mp3):
-        existing_tracks = [f for f in os.listdir(config.MUSIC_DIR) if f.endswith(".mp3")]
+        existing_tracks = [f for f in os.listdir(job.MUSIC_DIR) if f.endswith(".mp3")]
         if existing_tracks:
-            fallback_track = os.path.join(config.MUSIC_DIR, existing_tracks[0])
+            fallback_track = os.path.join(job.MUSIC_DIR, existing_tracks[0])
             print(f"Warning: Selected music track not found. Using fallback: {existing_tracks[0]}")
             shutil.copy2(fallback_track, music_mp3)
         else:
@@ -100,57 +101,57 @@ def check_inputs():
 
     return True
 
-def download_visuals(voice_dur):
+def download_visuals(job: GenerationJob, voice_dur):
     print(f"\n--- Downloading Media based on Voice Duration ({voice_dur:.1f}s) ---")
-    pacing = getattr(config, "CLIP_DURATION_TARGET", 5.0)
+    pacing = getattr(job, "CLIP_DURATION_TARGET", 5.0)
     
     import math
     required_clips = math.ceil(voice_dur / pacing)
     
     expanded_queries = []
     while len(expanded_queries) < required_clips:
-        expanded_queries.extend(config.QUERIES)
-    config.QUERIES = expanded_queries[:required_clips]
+        expanded_queries.extend(job.QUERIES)
+    job.QUERIES = expanded_queries[:required_clips]
     
     clip_idx = 1
     successful_queries = []
-    for q in config.QUERIES:
-        if download_clip_for_query(q, clip_idx):
+    for q in job.QUERIES:
+        if download_clip_for_query(q, clip_idx, job):
             successful_queries.append(q)
             clip_idx += 1
         else:
             print(f"Warning: Could not retrieve video clip for query '{q}'")
-    config.QUERIES = successful_queries
+    job.QUERIES = successful_queries
 
-def copy_deliverables():
-    final_video = os.path.join(config.OUTPUT_DIR, f"{config.OUTPUT_NAME}.mp4")
-    final_txt = os.path.join(config.OUTPUT_DIR, f"{config.OUTPUT_NAME}.txt")
+def copy_deliverables(job: GenerationJob):
+    final_video = job.video_path
+    final_txt = job.seo_path
     
-    print(f"Copying final files to {config.OUTPUT_DIR}...")
+    print(f"Copying final files to {job.OUTPUT_DIR}...")
     
-    src_video = os.path.join(config.TOPIC_TEMP_DIR, "output.mp4")
-    src_txt = os.path.join(config.TOPIC_TEMP_DIR, "output.txt")
+    src_video = os.path.join(job.TOPIC_TEMP_DIR, "output.mp4")
+    src_txt = os.path.join(job.TOPIC_TEMP_DIR, "output.txt")
     
     if not os.path.exists(src_video):
-        print(f"Error: output.mp4 not found in {config.TOPIC_TEMP_DIR}. Pipeline may have failed.")
+        print(f"Error: output.mp4 not found in {job.TOPIC_TEMP_DIR}. Pipeline may have failed.")
         return False
     
     import subprocess
-    intro_path = getattr(config, "INTRO_BUMPER", None)
-    outro_path = getattr(config, "OUTRO_BUMPER", None)
+    intro_path = getattr(job, "INTRO_BUMPER", None)
+    outro_path = getattr(job, "OUTRO_BUMPER", None)
     
     if intro_path or outro_path:
         print("Stitching Intro/Outro Bumpers...")
         concat_list = []
         
         def format_bumper(bumper_path, suffix):
-            tmp_bumper = os.path.join(config.TOPIC_TEMP_DIR, f"scaled_bumper_{suffix}.mp4")
-            vf = f"scale={config.VIDEO_WIDTH}:{config.VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad={config.VIDEO_WIDTH}:{config.VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2"
+            tmp_bumper = os.path.join(job.TOPIC_TEMP_DIR, f"scaled_bumper_{suffix}.mp4")
+            vf = f"scale={job.VIDEO_WIDTH}:{job.VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad={job.VIDEO_WIDTH}:{job.VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2"
             
             # Ensure the bumper matches output.mp4 properties EXACTLY to prevent concat failures
             cmd = [
                 "ffmpeg", "-y", "-i", bumper_path, 
-                "-vf", vf, "-r", str(config.FPS), 
+                "-vf", vf, "-r", str(job.FPS),
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", 
                 "-c:a", "aac", "-ar", "44100", "-b:a", "192k", 
                 tmp_bumper
@@ -166,13 +167,13 @@ def copy_deliverables():
         if outro_path and os.path.exists(outro_path):
             concat_list.append(format_bumper(outro_path, "outro"))
             
-        list_txt = os.path.join(config.TOPIC_TEMP_DIR, "concat_list.txt")
+        list_txt = os.path.join(job.TOPIC_TEMP_DIR, "concat_list.txt")
         with open(list_txt, "w") as f:
             for item in concat_list:
                 item_clean = item.replace("\\", "/")
                 f.write(f"file '{item_clean}'\n")
                 
-        stitched_video = os.path.join(config.TOPIC_TEMP_DIR, "stitched_output.mp4")
+        stitched_video = os.path.join(job.TOPIC_TEMP_DIR, "stitched_output.mp4")
         cmd_concat = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_txt, "-c", "copy", stitched_video]
         subprocess.run(cmd_concat, check=True, stdin=subprocess.DEVNULL)
         
@@ -184,33 +185,25 @@ def copy_deliverables():
         shutil.copy2(src_txt, final_txt)
     print("Deliverables copied.")
 
-def cleanup():
+def cleanup(job: GenerationJob):
     print("Cleaning up temporary topic files...")
-    if os.path.exists(config.TOPIC_TEMP_DIR) and config.TOPIC_TEMP_DIR != config.TEMP_DIR:
+    if os.path.exists(job.TOPIC_TEMP_DIR) and job.TOPIC_TEMP_DIR != job.TEMP_DIR:
         try:
-            shutil.rmtree(config.TOPIC_TEMP_DIR)
+            shutil.rmtree(job.TOPIC_TEMP_DIR)
             print("Cleanup complete.")
         except Exception as e:
             print(f"Cleanup warning: {e}")
 
-def generate_video_for_topic(topic, provider="gemini", manual_script_data=None, is_raw_script=False):
-    # Clear tracking sets/lists for this specific generation run
-    config.DOWNLOADED_VIDEO_IDS.clear()
-    config.VIDEO_ATTRIBUTIONS.clear()
-    config.LAST_ERROR_MESSAGE = ""
-
-    # Wipe old temp folders to satisfy strict cleanup requirements
-    if os.path.exists(config.TEMP_DIR):
-        print("Clearing old temporary video production files...")
-        for item in os.listdir(config.TEMP_DIR):
-            item_path = os.path.join(config.TEMP_DIR, item)
-            try:
-                if os.path.isdir(item_path):
-                    shutil.rmtree(item_path)
-                else:
-                    os.remove(item_path)
-            except Exception as e:
-                print(f"Startup cleanup warning: {e}")
+def generate_video_for_topic(topic, provider="gemini", manual_script_data=None, is_raw_script=False, job=None):
+    """Generate one reel using only the supplied job's state and workspace."""
+    job = job or create_generation_job(config)
+    job.reset_runtime_state()
+    try:
+        job.prepare_workspace()
+    except FileExistsError:
+        job.last_error = f"Job workspace already exists: {job.TOPIC_TEMP_DIR}"
+        print(job.last_error)
+        return False
 
     is_valid_topic = False
     if isinstance(topic, str) and topic.strip() != "":
@@ -229,7 +222,7 @@ def generate_video_for_topic(topic, provider="gemini", manual_script_data=None, 
                     ai_data = validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
                 except Exception as e:
                     print(f"Error: Invalid manual script data - {e}")
-                    config.LAST_ERROR_MESSAGE = f"Validation Error: {e}"
+                    job.last_error = f"Validation Error: {e}"
                     return False
             elif isinstance(topic, dict):
                 print(f"Processing scraped article/news topic...")
@@ -241,79 +234,53 @@ def generate_video_for_topic(topic, provider="gemini", manual_script_data=None, 
                 
                 # Format into a string prompt for the AI
                 prompt_text = f"News Headline: {topic.get('title')}\n\nArticle Body:\n{article_text[:4000]}"
-                ai_data = fetch_ai_script(prompt_text, provider=provider, is_raw_script=False)
+                ai_data = fetch_ai_script(prompt_text, provider=provider, is_raw_script=False, settings=job)
             else:
-                ai_data = fetch_ai_script(topic, provider=provider, is_raw_script=is_raw_script)
+                ai_data = fetch_ai_script(topic, provider=provider, is_raw_script=is_raw_script, settings=job)
             
-            # Override configuration variables
-            config.TOPIC_TITLE = ai_data["title"]
-            config.TOPIC_YEAR = ai_data["year"]
-            config.BG_MUSIC_VIBE = ai_data["bg_music_vibe"]
-            config.BG_MUSIC_TRACK_INDEX = random.randint(1, 5)
-            
-            clean_title = "".join(c for c in config.TOPIC_TITLE if c.isalnum() or c in (' ', '_', '-')).strip()
-            clean_year = "".join(c for c in config.TOPIC_YEAR if c.isalnum() or c in (' ', '_', '-')).strip()
-            config.OUTPUT_NAME = f"{clean_title} {clean_year} Asad Voice"
-            
-            topic_slug = "".join(c if c.isalnum() else "_" for c in clean_title.lower()).strip("_")
-            config.TOPIC_TEMP_DIR = os.path.join(config.TEMP_DIR, topic_slug)
-            
-            config.CAPTIONS = ai_data.get("captions", [])
-            config.NARRATIONS = ai_data.get("narrations", [])
-            if not config.CAPTIONS and "caption_text_1" in ai_data:
-                config.CAPTIONS = [ai_data.get(f"caption_text_{i}", "") for i in range(1, 5)]
-            if not config.NARRATIONS and "narration_text_1" in ai_data:
-                config.NARRATIONS = [ai_data.get(f"narration_text_{i}", "") for i in range(1, 5)]
-            
-            config.FULL_SPEECH_TEXT = " ".join([n for n in config.NARRATIONS if n.strip()])
-            
-            config.QUERIES = ai_data["queries"]
-            
-            config.SEO_TITLE = ai_data.get("seo_title", f"{config.TOPIC_TITLE} ({config.TOPIC_YEAR})")
-            config.SEO_DESCRIPTION = ai_data.get("seo_description", config.FULL_SPEECH_TEXT)
-            config.SEO_HASHTAGS = ai_data.get("seo_hashtags", "#History #UrduMysteries")
-            config.SEO_SHORT_CAPTION = ai_data.get("seo_short_caption", config.FULL_SPEECH_TEXT[:100])
+            job.apply_script(ai_data, track_index=random.randint(1, 5))
             
             print("\n=== AI Generated Script & Config ===")
-            print(f"Title: {config.TOPIC_TITLE} ({config.TOPIC_YEAR})")
-            print(f"Music Vibe: {config.BG_MUSIC_VIBE} (Track #{config.BG_MUSIC_TRACK_INDEX})")
-            print(f"Video Search Queries: {config.QUERIES}")
+            print(f"Job: {job.job_id}")
+            print(f"Title: {job.TOPIC_TITLE} ({job.TOPIC_YEAR})")
+            print(f"Music Vibe: {job.BG_MUSIC_VIBE} (Track #{job.BG_MUSIC_TRACK_INDEX})")
+            print(f"Video Search Queries: {job.QUERIES}")
             print("====================================\n")
         except Exception as e:
             err_msg = f"Error fetching AI script: {e}"
             print(f"Error fetching AI script, skipping topic '{topic}'. Error: {e}")
-            config.LAST_ERROR_MESSAGE = err_msg
+            job.last_error = err_msg
             return False
     else:
         print("\n--- Running Fallback Mode (Baghdad Battery) ---")
-        config.TOPIC_TEMP_DIR = os.path.join(config.TEMP_DIR, "baghdad_battery")
-        config.TOPIC_TITLE = "Baghdad Battery"
-        config.TOPIC_YEAR = "250 BC"
-        config.QUERIES = ["ancient mesopotamia", "parthian empire", "ancient battery", "archaeology discovery", "ancient electricity", "clay jar", "copper cylinder", "iron rod"]
+        job.TOPIC_TITLE = "Baghdad Battery"
+        job.TOPIC_YEAR = "250 BC"
+        job.OUTPUT_NAME = f"Baghdad Battery 250 BC Asad Voice {job.short_id}"
+        job.QUERIES = ["ancient mesopotamia", "parthian empire", "ancient battery", "archaeology discovery", "ancient electricity", "clay jar", "copper cylinder", "iron rod"]
         
     try:
-        if not check_inputs():
+        if not check_inputs(job):
             err_msg = "Input validation failed. Please ensure all required API keys are configured and local audio assets are downloaded."
             print("check_inputs failed. Skipping.")
-            config.LAST_ERROR_MESSAGE = err_msg
+            job.last_error = err_msg
             return False
             
-        voice_dur = generate_voiceover()
-        download_visuals(voice_dur)
+        voice_dur = generate_voiceover(job)
+        download_visuals(job, voice_dur)
         
-        build_video_frames(voice_dur)
-        run_ffmpeg(voice_dur)
-        write_seo_package()
-        copy_deliverables()
-        cleanup()
-        print(f"SUCCESS! Created video: {config.OUTPUT_NAME}.mp4")
+        build_video_frames(job, voice_dur)
+        run_ffmpeg(job, voice_dur)
+        write_seo_package(job)
+        copy_deliverables(job)
+        cleanup(job)
+        print(f"SUCCESS! Created video: {job.OUTPUT_NAME}.mp4")
         return True
     except Exception as e:
         err_msg = f"Failed to generate video for topic. Error: {e}"
         print(err_msg)
-        config.LAST_ERROR_MESSAGE = err_msg
+        job.last_error = err_msg
         try:
-            cleanup()
+            cleanup(job)
         except Exception:
             pass
         return False

@@ -67,7 +67,10 @@ class ScriptConfig(BaseModel):
             cleaned.append("cinematic")
         return cleaned
 
-def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
+def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None):
+    # A generation job passes a snapshot here; command-line callers without a
+    # job retain the legacy configuration defaults.
+    settings = settings or config
     provider = str(provider).strip().lower()
     schema_details = (
         "{\n"
@@ -86,7 +89,7 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
         "}"
     )
 
-    target_dur = getattr(config, "TARGET_DURATION", None)
+    target_dur = getattr(settings, "TARGET_DURATION", None)
     if target_dur:
         num_slides = int(target_dur / 5.0)
         duration_instruction = f"IMPORTANT: The user requested a target video duration of {target_dur} seconds. You MUST generate approximately {num_slides} items in the captions, narrations, and queries arrays."
@@ -115,14 +118,14 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
         chain = ["gemini", "groq", "openrouter", "openai", "ollama"]
         last_error = None
         for p in chain:
-            if p == "gemini" and not config.GEMINI_API_KEY: continue
-            if p == "groq" and not config.GROQ_API_KEY: continue
-            if p == "openrouter" and not config.OPENROUTER_API_KEY: continue
-            if p == "openai" and not config.OPENAI_API_KEY: continue
+            if p == "gemini" and not settings.GEMINI_API_KEY: continue
+            if p == "groq" and not settings.GROQ_API_KEY: continue
+            if p == "openrouter" and not settings.OPENROUTER_API_KEY: continue
+            if p == "openai" and not settings.OPENAI_API_KEY: continue
             
             try:
                 print(f"--> Trying {p.upper()}...")
-                return fetch_ai_script(topic, provider=p, is_raw_script=is_raw_script)
+                return fetch_ai_script(topic, provider=p, is_raw_script=is_raw_script, settings=settings)
             except Exception as e:
                 print(f"    [X] {p.upper()} failed: {e}")
                 last_error = e
@@ -130,12 +133,12 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
 
     if provider == "gemini":
         print(f"Calling Google Gemini 2.0 Flash to auto-generate script...")
-        if not config.GEMINI_API_KEY:
+        if not settings.GEMINI_API_KEY:
             raise ValueError("Error: GEMINI_API_KEY environment variable is not set. Please set it in your .env file.")
         
         url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
         headers = {
-            "x-goog-api-key": config.GEMINI_API_KEY,
+            "x-goog-api-key": settings.GEMINI_API_KEY,
             "Content-Type": "application/json"
         }
         prompt_text = f"{system_prompt}\n\n{user_prompt}"
@@ -169,11 +172,11 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
             
     elif provider == "openai":
         print(f"Calling OpenAI GPT-4o-mini to auto-generate script...")
-        if not config.OPENAI_API_KEY:
+        if not settings.OPENAI_API_KEY:
             raise ValueError("Error: OPENAI_API_KEY environment variable is not set. Please set it in your .env file.")
         url = "https://api.openai.com/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {config.OPENAI_API_KEY}",
+            "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
             "Content-Type": "application/json"
         }
         
@@ -202,11 +205,11 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
 
     elif provider == "groq":
         print(f"Calling Groq llama-3.3-70b-versatile to auto-generate script...")
-        if not config.GROQ_API_KEY:
+        if not settings.GROQ_API_KEY:
             raise ValueError("Error: GROQ_API_KEY environment variable is not set. Please set it in your .env file.")
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {config.GROQ_API_KEY}",
+            "Authorization": f"Bearer {settings.GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
         
@@ -234,7 +237,7 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
         return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
 
     elif provider == "ollama":
-        ollama_model = getattr(config, "OLLAMA_MODEL", "qwen2.5:3b")
+        ollama_model = getattr(settings, "OLLAMA_MODEL", "qwen2.5:3b")
         print(f"Calling Local Ollama ({ollama_model}) to auto-generate script...")
         url = "http://localhost:11434/api/chat"
         payload = {
@@ -262,11 +265,11 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False):
 
     elif provider == "openrouter":
         print(f"Calling OpenRouter Llama 3.3 70B to auto-generate script...")
-        if not config.OPENROUTER_API_KEY:
+        if not settings.OPENROUTER_API_KEY:
             raise ValueError("Error: OPENROUTER_API_KEY environment variable is not set. Please set it in your .env file.")
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
             "HTTP-Referer": "https://github.com/anisar699/History-Reels-Builder-Gemini",
             "X-Title": "History Reels Builder",
             "Content-Type": "application/json"
