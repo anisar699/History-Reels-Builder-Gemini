@@ -74,7 +74,13 @@ def render_live_generation_status(output_dir: str) -> None:
         if record.get("status") in {"queued", "running"}
     ]
 
-    st.markdown("### Studio render status")
+    if not live_jobs:
+        title_str = "Content Studio (Idle)"
+    else:
+        first_job = live_jobs[0]
+        progress = max(0, min(100, int(first_job.get("progress") or 0)))
+        title_str = f"Content Studio (Rendering {progress}%)"
+    st.markdown(f"### 🎬 {title_str}")
     status_tab, terminal_tab = st.tabs(["Live progress", "Terminal"])
 
     with status_tab:
@@ -1261,7 +1267,6 @@ with tabs[0]:
             st.session_state["latest_render_job_ids"] = queued_jobs
             st.info("Follow the live stage tracker below. The completed video and its SEO package will appear here automatically.")
 
-    st.markdown("### 🧵 Background Render Queue")
     render_live_generation_status(config.OUTPUT_DIR)
     try:
         current_records = JobStore(config.OUTPUT_DIR).list_jobs(limit=25)
