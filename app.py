@@ -530,7 +530,7 @@ with st.sidebar:
         if provider == "ollama":
             local_models = detect_ollama_models()
             if local_models:
-                default_model = getattr(config, "OLLAMA_MODEL", "qwen2.5:3b")
+                default_model = getattr(config, "OLLAMA_MODEL", "qwen2.5:7b")
                 default_idx = 0
                 if default_model in local_models:
                     default_idx = local_models.index(default_model)
@@ -550,14 +550,19 @@ with st.sidebar:
             
                 if is_running:
                     st.warning("⚠️ Ollama is running, but no models were found.")
-                    st.info("💡 Download a model by running: `ollama pull qwen2.5:3b` in your terminal.")
+                    st.info("💡 Download a model by opening your terminal (CMD/PowerShell) and running: `ollama run qwen2.5:7b`")
                 else:
                     st.error("❌ Ollama service not detected on localhost:11434.")
-                    st.info("💡 Please start the Ollama desktop app or service on your PC.")
+                    st.markdown("""
+                    **Ollama is not installed or not running!**
+                    1. [Click here to download Ollama for Windows](https://ollama.com/download/windows)
+                    2. Install the downloaded file.
+                    3. Open CMD or PowerShell and run: `ollama run qwen2.5:7b`
+                    """)
                 
                 manual_model = st.text_input(
                     "Ollama Model Name (Manual)",
-                    value=getattr(config, "OLLAMA_MODEL", "qwen2.5:3b"),
+                    value=getattr(config, "OLLAMA_MODEL", "qwen2.5:7b"),
                     help="Specify model name manually."
                 )
                 config.OLLAMA_MODEL = manual_model

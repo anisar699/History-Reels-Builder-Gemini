@@ -335,7 +335,7 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
         return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
 
     elif provider == "ollama":
-        ollama_model = getattr(settings, "OLLAMA_MODEL", "qwen2.5:3b")
+        ollama_model = getattr(settings, "OLLAMA_MODEL", "qwen2.5:7b")
         print(f"Calling Local Ollama ({ollama_model}) to auto-generate script...")
         url = "http://localhost:11434/api/chat"
         payload = {
