@@ -504,7 +504,6 @@ st.markdown("""
 # Main Layout
 st.markdown("<h1 class='main-title'>🎥 AI CONTENT ENGINE</h1>", unsafe_allow_html=True)
 st.markdown("<p class='subtitle'>Deploy premium short-form viral AI reels with multi-lingual scripts & advanced TTS engines in a single click.</p>", unsafe_allow_html=True)
-st.warning("⚠️ Warning: Generating multiple reels at the same time is not officially supported and may lead to mixed results. Please wait for the current generation to finish.")
 
 # Initialize Session State
 if "uploaded_df" not in st.session_state:
@@ -1131,6 +1130,7 @@ with tabs[0]:
         st.caption("Your sidebar settings will be saved with this render.")
         
         start_btn = st.button("✨ Generate Video", key="generate_reel", width="stretch")
+        st.warning("⚠️ Warning: Generating multiple reels at the same time is not officially supported and may lead to mixed results. Please wait for the current generation to finish.")
 
     # Output Console & Log Blocks
     if start_btn:
