@@ -522,7 +522,7 @@ with st.sidebar:
         provider = st.selectbox(
             "AI Content Provider",
             options=["auto", "gemini", "openai", "groq", "ollama", "openrouter"],
-            format_func=lambda x: "Auto Fallback (Best Available)" if x == "auto" else (x.upper() if x in ["openai", "ollama", "groq"] else x.capitalize()),
+            format_func=lambda x: "Auto Fallback (Best Available)" if x == "auto" else ("OLLAMA (Free Local)" if x == "ollama" else (x.upper() if x in ["openai", "groq"] else x.capitalize())),
             index=0,
             help="Select 'Auto' for the ultimate fail-proof fallback chain."
         )
@@ -558,6 +558,8 @@ with st.sidebar:
                     1. [Click here to download Ollama for Windows](https://ollama.com/download/windows)
                     2. Install the downloaded file.
                     3. Open CMD or PowerShell and run: `ollama run qwen2.5:7b`
+                    
+                    *💡 Note: Once downloaded and installed locally on your PC, this AI model runs 100% offline and is lifetime free to use! You don't need any API key or internet connection to generate scripts.*
                     """)
                 
                 manual_model = st.text_input(
