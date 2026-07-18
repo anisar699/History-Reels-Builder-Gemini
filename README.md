@@ -8,6 +8,8 @@ Now upgraded to a **Fully Dynamic System** supporting videos up to 10 minutes lo
 
 ## 🌟 What's New in V2.0 (The Universal Update)
 
+* **Ultimate Auto Fallback AI Engine:** Never hit an API limit again! Select the "Auto Fallback" provider to seamlessly try Google Gemini -> OpenAI -> Local Ollama -> OpenRouter -> Groq sequentially. If one fails, the next takes over instantly.
+* **Checkbox-based Media Sources UI:** Visually select your allowed stock media platforms (Pexels, Pixabay, etc.) using clean checkboxes directly from the new Visuals & Transitions panel.
 * **Dynamic Scripts & Pacing:** No more 4-slide limits! Generate 3 to 10-minute long videos effortlessly. The AI mathematically calculates slides, subtitles, and queries based on your target duration.
 * **Creative Direction Controls:** Set a niche, content language, tone, target platform, and visual style for every AI-generated reel. These choices are stored with each queued job and reused on retries.
 * **Language-Aware Captions:** Urdu, English, Hindi, Arabic, and Roman Urdu each use an appropriate caption font. You can also upload a `.ttf` or `.otf` font; the render pipeline preserves and burns that exact uploaded font.

@@ -200,13 +200,13 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
 
     if provider == "auto":
         print("\n[Auto Fallback Mode] Attempting to find the best available AI provider...")
-        chain = ["gemini", "groq", "openrouter", "openai", "ollama"]
+        chain = ["gemini", "openai", "ollama", "openrouter", "groq"]
         last_error = None
         for p in chain:
-            if p == "gemini" and not settings.GEMINI_API_KEY: continue
-            if p == "groq" and not settings.GROQ_API_KEY: continue
-            if p == "openrouter" and not settings.OPENROUTER_API_KEY: continue
-            if p == "openai" and not settings.OPENAI_API_KEY: continue
+            if p == "gemini" and not getattr(settings, "GEMINI_API_KEY", None): continue
+            if p == "groq" and not getattr(settings, "GROQ_API_KEY", None): continue
+            if p == "openrouter" and not getattr(settings, "OPENROUTER_API_KEY", None): continue
+            if p == "openai" and not getattr(settings, "OPENAI_API_KEY", None): continue
             
             try:
                 print(f"--> Trying {p.upper()}...")
@@ -218,12 +218,12 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
 
     if provider == "gemini":
         print(f"Calling Google Gemini 2.0 Flash to auto-generate script...")
-        if not settings.GEMINI_API_KEY:
+        if not getattr(settings, "GEMINI_API_KEY", None):
             raise ValueError("Error: GEMINI_API_KEY environment variable is not set. Please set it in your .env file.")
         
         url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
         headers = {
-            "x-goog-api-key": settings.GEMINI_API_KEY,
+            "x-goog-api-key": getattr(settings, "GEMINI_API_KEY", None),
             "Content-Type": "application/json"
         }
         prompt_text = f"{system_prompt}\n\n{user_prompt}"
@@ -260,11 +260,11 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
             
     elif provider == "openai":
         print(f"Calling OpenAI GPT-4o-mini to auto-generate script...")
-        if not settings.OPENAI_API_KEY:
+        if not getattr(settings, "OPENAI_API_KEY", None):
             raise ValueError("Error: OPENAI_API_KEY environment variable is not set. Please set it in your .env file.")
         url = "https://api.openai.com/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+            "Authorization": f"Bearer {getattr(settings, 'OPENAI_API_KEY', None)}",
             "Content-Type": "application/json"
         }
         
@@ -300,11 +300,11 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
 
     elif provider == "groq":
         print(f"Calling Groq llama-3.3-70b-versatile to auto-generate script...")
-        if not settings.GROQ_API_KEY:
+        if not getattr(settings, "GROQ_API_KEY", None):
             raise ValueError("Error: GROQ_API_KEY environment variable is not set. Please set it in your .env file.")
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+            "Authorization": f"Bearer {getattr(settings, 'GROQ_API_KEY', None)}",
             "Content-Type": "application/json"
         }
         
@@ -365,42 +365,50 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
         return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
 
     elif provider == "openrouter":
-        print(f"Calling OpenRouter Llama 3.3 70B to auto-generate script...")
-        if not settings.OPENROUTER_API_KEY:
+        if not getattr(settings, "OPENROUTER_API_KEY", None):
             raise ValueError("Error: OPENROUTER_API_KEY environment variable is not set. Please set it in your .env file.")
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {getattr(settings, 'OPENROUTER_API_KEY', None)}",
             "HTTP-Referer": "https://github.com/anisar699/History-Reels-Builder-Gemini",
             "X-Title": "AI Reels Studio",
             "Content-Type": "application/json"
         }
         
-        payload = {
-            "model": "meta-llama/llama-3.3-70b-instruct",
-            "response_format": { "type": "json_object" },
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-        }
+        models_to_try = [
+            "openai/gpt-4o",
+            "openai/gpt-4o-mini",
+            "google/gemini-2.0-flash-exp:free",
+            "meta-llama/llama-3.3-70b-instruct"
+        ]
         
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=30)
-            response.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Network error: {e}")
-        try:
-            result = response.json()
-        except Exception as e:
-            raise RuntimeError(f"Failed to decode JSON: {e}")
-        try:
-            content = result["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as e:
-            raise RuntimeError(f"Unexpected API response from {provider}: {e}")
-        parsed = parse_json_response(content)
-        validated = ScriptConfig(**parsed)
-        return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
+        last_error = None
+        for model in models_to_try:
+            print(f"Calling OpenRouter with model '{model}' to auto-generate script...")
+            payload = {
+                "model": model,
+                "response_format": { "type": "json_object" },
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ]
+            }
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=30)
+                response.raise_for_status()
+                result = response.json()
+                content = result["choices"][0]["message"]["content"]
+                parsed = parse_json_response(content)
+                validated = ScriptConfig(**parsed)
+                return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
+            except requests.exceptions.RequestException as e:
+                print(f"    [X] Model {model} failed (Network/API Error): {e}")
+                last_error = e
+            except Exception as e:
+                print(f"    [X] Model {model} failed (Processing Error): {e}")
+                last_error = e
+                
+        raise RuntimeError(f"All OpenRouter auto-fallback models failed. Last error: {last_error}")
 
     else:
         raise ValueError(f"Unknown AI content provider: {provider}")

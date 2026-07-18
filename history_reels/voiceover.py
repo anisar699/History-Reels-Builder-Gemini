@@ -129,6 +129,14 @@ def generate_voiceover(job: GenerationJob):
     if not voice_segments:
         return 0.0
     voice_mp3 = os.path.join(job.TOPIC_TEMP_DIR, "voice.mp3")
+    
+    cmd_concat = ["ffmpeg", "-y"]
+    inputs_str = ""
+    for i, seg in enumerate(voice_segments):
+        cmd_concat.extend(["-i", seg])
+        inputs_str += f"[{i}:a]"
+    n = len(voice_segments)
+    
     cmd_concat.extend(["-filter_complex", f"{inputs_str}concat=n={n}:v=0:a=1[out]", "-map", "[out]", voice_mp3])
     subprocess.run(cmd_concat, check=True, stdin=subprocess.DEVNULL)
     

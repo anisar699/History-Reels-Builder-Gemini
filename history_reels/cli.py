@@ -58,11 +58,11 @@ def check_inputs(job: GenerationJob):
         captions = [getattr(job, f"CAPTION_TEXT_{index}", "") for index in range(1, 21)]
     if not narrations:
         narrations = [getattr(job, f"NARRATION_TEXT_{index}", "") for index in range(1, 21)]
+    captions = [str(value).strip() for value in captions if str(value).strip()]
+    narrations = [str(value).strip() for value in narrations if str(value).strip()]
     if len(captions) != len(narrations):
         print("Error: Captions and narrations must contain the same number of slides.")
         return False
-    captions = [str(value).strip() for value in captions if str(value).strip()]
-    narrations = [str(value).strip() for value in narrations if str(value).strip()]
     queries = [str(value).strip() for value in (getattr(job, "QUERIES", []) or []) if str(value).strip()]
     if not captions or not narrations or not queries:
         print("Error: At least one caption, narration, and media query is required.")
@@ -89,7 +89,7 @@ def download_visuals(job: GenerationJob, voice_dur):
     pacing = getattr(job, "CLIP_DURATION_TARGET", 5.0)
     
     import math
-    required_clips = math.ceil(voice_dur / pacing)
+    required_clips = math.ceil(voice_dur / max(pacing, 0.1))
     
     expanded_queries = []
     while len(expanded_queries) < required_clips:
@@ -325,6 +325,7 @@ def generate_video_for_topic(topic, provider="gemini", manual_script_data=None, 
             print(f"Error fetching AI script, skipping topic '{topic}'. Error: {e}")
             job.last_error = err_msg
             _finish_job(job, "failed", err_msg)
+            cleanup(job)
             return False
     else:
         print("\n--- Running Fallback Mode (Universal Creator Demo) ---")
@@ -413,7 +414,7 @@ def main():
         else:
             df = pd.read_excel(csv_path)
             
-        cols = [c.lower() for c in df.columns]
+        cols = [str(c).lower() for c in df.columns]
         has_script_cols = ("title" in cols and "caption_text_1" in cols and "narration_text_1" in cols)
         
         print(f"Loaded {len(df)} rows from file. Starting batch generation...")

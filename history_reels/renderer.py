@@ -99,7 +99,7 @@ def build_video_frames(job: GenerationJob, voice_dur):
             scale_h = int(job.VIDEO_HEIGHT * 2)
             vf_zoom = f"scale={scale_w}:{scale_h}:force_original_aspect_ratio=decrease,pad={scale_w}:{scale_h}:(ow-iw)/2:(oh-ih)/2,zoompan=z='zoom+0.0005':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={int(job.FPS * clip_dur)}:s={job.VIDEO_WIDTH}x{job.VIDEO_HEIGHT},fps={job.FPS}"
             cmd = [
-                "ffmpeg", "-y", "-loop", "1", "-i", img_path, "-t", f"{clip_dur:.3f}",
+                "ffmpeg", "-y", "-i", img_path, "-t", f"{clip_dur:.3f}",
                 "-vf", vf_zoom, "-an", "-r", str(job.FPS), "-pix_fmt", "yuv420p", clip_path
             ]
             subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)
@@ -221,7 +221,10 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
     if use_whooshes:
         offsets = job.TRANSITION_OFFSETS
         num_t = len(offsets)
-        filter_parts.append(f"[{whoosh_input_index}:a]asplit={num_t}" + "".join(f"[w{j}]" for j in range(num_t)))
+        if num_t == 1:
+            filter_parts.append(f"[{whoosh_input_index}:a]anull[w0]")
+        else:
+            filter_parts.append(f"[{whoosh_input_index}:a]asplit={num_t}" + "".join(f"[w{j}]" for j in range(num_t)))
         for j, off in enumerate(offsets):
             offset_ms = int(off * 1000)
             filter_parts.append(f"[w{j}]adelay={offset_ms}|{offset_ms},volume=0.45[whoosh{j}]")
@@ -319,6 +322,10 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
     ass_path_clean = ass_path.replace("\\", "/")
     font_dir_clean = os.path.dirname(os.path.abspath(job.FONT_PATH)).replace("\\", "/")
     v_filters.append(f"subtitles='{ass_path_clean}':fontsdir='{font_dir_clean}'")
+    
+    v_filter_str = ",".join(v_filters)
+    filter_parts.append(f"[0:v]{v_filter_str}[v_base]")
+    last_v_label = "[v_base]"
     # 2. Progress Bar Overlay
     show_bar = getattr(job, "SHOW_PROGRESS_BAR", True)
     bar_color = getattr(job, "PROGRESS_BAR_COLOR", "gold").lower()

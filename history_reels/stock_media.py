@@ -49,11 +49,9 @@ def download_file_with_retry(url, path, max_attempts=2):
             # Validate that the file is not an HTML error/captcha page
             with open(path, "rb") as f:
                 header = f.read(20).lower()
-                if header.startswith(b"<!doc") or header.startswith(b"<html"):
-                    if os.path.exists(path):
-                        try: os.remove(path)
-                        except: pass
-                    raise ValueError("Downloaded file is an HTML page (likely blocked by anti-bot).")
+                is_html = header.startswith(b"<!doc") or header.startswith(b"<html")
+            if is_html:
+                raise ValueError("Downloaded file is an HTML page (likely blocked by anti-bot).")
             return True
         except Exception as e:
             if os.path.exists(path):
@@ -113,6 +111,9 @@ def _report_media_event(job: GenerationJob, message: str) -> None:
 
 
 def download_clip_for_query(query, index, job: GenerationJob):
+    if not hasattr(job, "DOWNLOADED_VIDEO_IDS"):
+        job.DOWNLOADED_VIDEO_IDS = set()
+
     # Check if clip (video or image) already exists
     for ext in [".mp4", ".jpg", ".png"]:
         path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{index}{ext}")
@@ -378,7 +379,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                             try:
                                 return int(f_obj.get("size", 999999999))
                             except ValueError:
-                                return 0
+                                return float('inf')
                         mp4_file = next((f for f in files if f.get("name", "").endswith(".mp4") and _get_size(f) < 100_000_000), None)
                         if mp4_file:
                             video_url = f"https://archive.org/download/{identifier}/{mp4_file['name']}"
