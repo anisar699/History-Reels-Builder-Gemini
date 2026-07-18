@@ -11,7 +11,15 @@ from typing import Any, Iterator
 
 
 VALID_STATUSES = {"queued", "running", "succeeded", "failed", "cancelled"}
-SENSITIVE_SETTING_MARKERS = ("API_KEY", "PASSWORD", "SECRET", "TOKEN")
+TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
+SENSITIVE_SETTING_MARKERS = (
+    "API_KEY",
+    "PASSWORD",
+    "SECRET",
+    "TOKEN",
+    "PRIVATE_KEY",
+    "PUBLIC_KEY",
+)
 EPHEMERAL_SETTING_NAMES = {
     "DOWNLOADED_VIDEO_IDS",
     "LAST_ERROR_MESSAGE",
@@ -198,11 +206,37 @@ class JobStore:
             )
         self.record_event(job.job_id, "info", "queued", "Job queued.", progress=0)
 
-    def mark_running(self, job_id: str) -> None:
-        self._update(job_id, "running", current_stage="starting", progress=1)
-        self.record_event(job_id, "info", "starting", "Worker started.", progress=1)
+    def claim_job(self, job_id: str) -> bool:
+        """Atomically move a queued job to running. Returns False if already claimed/cancelled."""
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE jobs
+                SET status = 'running',
+                    current_stage = 'starting',
+                    progress = 1,
+                    updated_at = ?
+                WHERE job_id = ?
+                  AND status = 'queued'
+                  AND COALESCE(cancel_requested, 0) = 0
+                """,
+                (_now(), job_id),
+            )
+            claimed = cursor.rowcount == 1
+        if claimed:
+            self.record_event(job_id, "info", "starting", "Worker claimed job.", progress=1)
+        return claimed
 
-    def mark_succeeded(self, job: Any) -> None:
+    def mark_running(self, job_id: str) -> None:
+        """Compatibility wrapper — prefer claim_job for race-free ownership."""
+        if not self.claim_job(job_id):
+            # Already running under this worker is fine for legacy direct calls.
+            record = self.get_job(job_id)
+            if record and record.get("status") == "running":
+                return
+            self.record_event(job_id, "warning", "starting", "Could not claim job (already claimed, finished, or cancelled).")
+
+    def mark_succeeded(self, job: Any) -> bool:
         output_name = getattr(job, "OUTPUT_NAME", "")
         output_dir = getattr(job, "OUTPUT_DIR", "")
         
@@ -210,46 +244,64 @@ class JobStore:
         video_path = getattr(job, "video_path", os.path.join(output_dir, f"{output_name}.mp4") if output_name else "")
         seo_path = getattr(job, "seo_path", os.path.join(output_dir, f"{output_name}.txt") if output_name else "")
 
-        self._update(
+        record = self.get_job(job.job_id)
+        if record and record.get("cancel_requested"):
+            self.mark_cancelled(job, "Cancelled before completion was recorded.")
+            return False
+
+        updated = self._update(
             job.job_id,
             "succeeded",
+            allowed_from={"running"},
             output_name=output_name,
             output_video_path=video_path,
             output_seo_path=seo_path,
             current_stage="completed",
             progress=100,
         )
-        self.record_event(job.job_id, "info", "completed", "Generation completed.", progress=100)
+        if updated:
+            self.record_event(job.job_id, "info", "completed", "Generation completed.", progress=100)
+        return updated
 
-    def mark_failed(self, job: Any, error_message: str) -> None:
-        self.mark_failed_by_id(job.job_id, error_message)
+    def mark_failed(self, job: Any, error_message: str) -> bool:
+        return self.mark_failed_by_id(job.job_id, error_message)
 
-    def mark_failed_by_id(self, job_id: str, error_message: str) -> None:
+    def mark_failed_by_id(self, job_id: str, error_message: str) -> bool:
         """Finalize a job that failed before a complete job object is available."""
-        self._update(
+        updated = self._update(
             job_id,
             "failed",
+            allowed_from={"queued", "running"},
             error_message=error_message,
             error_category=categorize_error(error_message),
             current_stage="failed",
         )
-        self.record_event(job_id, "error", "failed", error_message)
+        if updated:
+            self.record_event(job_id, "error", "failed", error_message)
+        return updated
 
-    def mark_cancelled(self, job: Any, reason: str = "Cancellation requested") -> None:
-        self._update(
+    def mark_cancelled(self, job: Any, reason: str = "Cancellation requested") -> bool:
+        updated = self._update(
             job.job_id,
             "cancelled",
+            allowed_from={"queued", "running"},
             error_message=reason,
             error_category="cancelled",
             current_stage="cancelled",
         )
-        self.record_event(job.job_id, "warning", "cancelled", reason)
+        if updated:
+            self.record_event(job.job_id, "warning", "cancelled", reason)
+        return updated
 
     def update_progress(self, job_id: str, stage: str, progress: int, message: str) -> None:
         safe_progress = max(0, min(100, int(progress)))
         with self._connection() as connection:
             connection.execute(
-                "UPDATE jobs SET current_stage = ?, progress = ?, updated_at = ? WHERE job_id = ?",
+                """
+                UPDATE jobs
+                SET current_stage = ?, progress = ?, updated_at = ?
+                WHERE job_id = ? AND status = 'running'
+                """,
                 (stage, safe_progress, _now(), job_id),
             )
         self.record_event(job_id, "info", stage, message, progress=safe_progress)
@@ -261,7 +313,15 @@ class JobStore:
                 (job_id, _now(), level, stage, progress, str(message)[:2000]),
             )
 
-    def _update(self, job_id: str, status: str, **fields: Any) -> None:
+    def _update(
+        self,
+        job_id: str,
+        status: str,
+        *,
+        allowed_from: set[str] | None = None,
+        **fields: Any,
+    ) -> bool:
+        """Apply a status transition. Refuses to overwrite terminal statuses with different ones."""
         if status not in VALID_STATUSES:
             raise ValueError(f"Unsupported job status: {status}")
         assignments = ["status = ?", "updated_at = ?"]
@@ -270,8 +330,20 @@ class JobStore:
             assignments.append(f"{field_name} = ?")
             values.append(field_value)
         values.append(job_id)
+        where = "job_id = ?"
+        if allowed_from:
+            placeholders = ", ".join("?" for _ in allowed_from)
+            where += f" AND status IN ({placeholders})"
+            values.extend(sorted(allowed_from))
+        elif status in TERMINAL_STATUSES:
+            # Default terminal writes only from non-terminal states.
+            where += " AND status NOT IN ('succeeded', 'failed', 'cancelled')"
         with self._connection() as connection:
-            connection.execute(f"UPDATE jobs SET {', '.join(assignments)} WHERE job_id = ?", values)
+            cursor = connection.execute(
+                f"UPDATE jobs SET {', '.join(assignments)} WHERE {where}",
+                values,
+            )
+            return cursor.rowcount == 1
 
     def request_cancellation(self, job_id: str) -> bool:
         with self._connection() as connection:
@@ -331,6 +403,13 @@ class JobStore:
             except (TypeError, json.JSONDecodeError):
                 record[key] = {}
         return record
+
+    def list_running_job_ids(self) -> list[str]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT job_id FROM jobs WHERE status = 'running' ORDER BY created_at ASC"
+            ).fetchall()
+        return [str(row["job_id"]) for row in rows]
 
     def list_queued_job_ids(self) -> list[str]:
         with self._connection() as connection:

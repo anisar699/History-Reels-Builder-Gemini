@@ -28,7 +28,16 @@ def dashboard_auth_required() -> bool:
 
 
 def session_key_override_allowed() -> bool:
-    return env_flag("DASHBOARD_ALLOW_SESSION_KEY_OVERRIDE")
+    """Whether the dashboard may accept/persist browser-supplied API keys.
+
+    Explicit ``DASHBOARD_ALLOW_SESSION_KEY_OVERRIDE`` always wins.
+    When unset, local desktop use (auth off) may save keys; public auth mode
+    blocks browser key entry unless the operator opts in.
+    """
+    raw = os.environ.get("DASHBOARD_ALLOW_SESSION_KEY_OVERRIDE")
+    if raw is not None and str(raw).strip() != "":
+        return str(raw).strip().lower() in TRUE_VALUES
+    return not dashboard_auth_required()
 
 
 def save_local_env_values(env_path: str | os.PathLike[str], updates: dict[str, str]) -> list[str]:

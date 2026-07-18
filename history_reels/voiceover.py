@@ -1,6 +1,12 @@
 import os
-import subprocess
 from history_reels.jobs import GenerationJob
+from history_reels.ffmpeg_runner import (
+    PROBE_TIMEOUT_SECONDS,
+    TTS_TIMEOUT_SECONDS,
+    AUDIO_TIMEOUT_SECONDS,
+    RenderError,
+    run_command,
+)
 
 
 VOICE_LANGUAGE_PREFIXES = {
@@ -26,14 +32,14 @@ def get_audio_duration(path):
         "-of", "default=noprint_wrappers=1:nokey=1", path
     ]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL)
-        duration = float(res.stdout.strip())
+        res = run_command(cmd, timeout=PROBE_TIMEOUT_SECONDS, label="ffprobe duration")
+        duration = float(str(res.stdout or "").strip())
         if duration <= 0:
             raise ValueError(f"Invalid duration {duration} for {path}")
         return duration
     except FileNotFoundError:
         raise RuntimeError("ffprobe not found. Please install FFmpeg (includes ffprobe).")
-    except (subprocess.CalledProcessError, ValueError) as e:
+    except (RenderError, ValueError) as e:
         raise RuntimeError(f"Failed to get audio duration for '{path}': {e}")
 
 def generate_voiceover(job: GenerationJob):
@@ -92,8 +98,9 @@ def generate_voiceover(job: GenerationJob):
             voice_pitch = getattr(job, "VOICE_PITCH", "default")
             if voice_pitch and voice_pitch != "default":
                 cmd_tts.extend(["--pitch", voice_pitch])
+            job_id = str(getattr(job, "job_id", "") or "") or None
             try:
-                subprocess.run(cmd_tts, check=True, stdin=subprocess.DEVNULL)
+                run_command(cmd_tts, timeout=TTS_TIMEOUT_SECONDS, job_id=job_id, label="edge-tts")
             except Exception:
                 if os.path.exists(seg_path):
                     try: os.remove(seg_path)
@@ -126,9 +133,16 @@ def generate_voiceover(job: GenerationJob):
         job.SLIDE_TIMINGS.append(timing)
     
     # Concatenate audio segments using FFmpeg
-    if not voice_segments:
-        return 0.0
     voice_mp3 = os.path.join(job.TOPIC_TEMP_DIR, "voice.mp3")
+    job_id = str(getattr(job, "job_id", "") or "") or None
+    if not voice_segments:
+        run_command(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "1.0", "-q:a", "9", "-acodec", "libmp3lame", voice_mp3],
+            timeout=30,
+            job_id=job_id,
+            label="silent voice pad",
+        )
+        return 1.0
     
     cmd_concat = ["ffmpeg", "-y"]
     inputs_str = ""
@@ -138,7 +152,7 @@ def generate_voiceover(job: GenerationJob):
     n = len(voice_segments)
     
     cmd_concat.extend(["-filter_complex", f"{inputs_str}concat=n={n}:v=0:a=1[out]", "-map", "[out]", voice_mp3])
-    subprocess.run(cmd_concat, check=True, stdin=subprocess.DEVNULL)
+    run_command(cmd_concat, timeout=AUDIO_TIMEOUT_SECONDS, job_id=job_id, label="voice concat")
     
     if needed_pad > 0:
         padded_path = os.path.join(job.TOPIC_TEMP_DIR, "voice_padded.mp3")
@@ -147,7 +161,7 @@ def generate_voiceover(job: GenerationJob):
             "-af", f"apad=pad_dur={needed_pad:.3f}",
             padded_path
         ]
-        subprocess.run(pad_cmd, check=True, stdin=subprocess.DEVNULL)
+        run_command(pad_cmd, timeout=60, job_id=job_id, label="voice pad")
         os.replace(padded_path, voice_mp3)
         print(f"Padded final audio by {needed_pad:.2f}s to reach target {target_dur:.2f}s")
     

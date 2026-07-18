@@ -1,9 +1,10 @@
 import os
 import glob
 import hashlib
+import html
 import random
-import uuid
 from datetime import datetime
+from pathlib import Path
 import streamlit as st
 
 from history_reels import config
@@ -12,7 +13,12 @@ from history_reels.jobs import create_generation_job
 from history_reels.job_manager import get_job_manager
 from history_reels.job_store import JobStore
 from history_reels.input_validation import validate_external_url, validate_uploaded_file
-from history_reels.security import require_dashboard_auth, save_local_env_values
+from history_reels.security import (
+    dashboard_auth_required,
+    require_dashboard_auth,
+    save_local_env_values,
+    session_key_override_allowed,
+)
 from history_reels.voiceover import filter_voices_for_language
 
 config.check_system_dependencies()
@@ -60,6 +66,40 @@ def _status_badge(status: str) -> str:
     return labels.get(status, f"⚪ {status.title()}")
 
 
+def _cancel_render_job(output_dir: str, job_id: str) -> None:
+    """Request cancellation through the active job manager (no dead module API)."""
+    manager = get_job_manager(config.JOB_WORKER_MODE)
+    manager.cancel(output_dir, job_id)
+
+
+def _save_uploaded_asset(
+    upload,
+    *,
+    directory: str,
+    prefix: str,
+    extension: str,
+    session_path_key: str,
+    session_digest_key: str,
+    stable_name: str | None = None,
+) -> str:
+    """Write an upload once per content digest so Streamlit reruns do not spam disk."""
+    payload = bytes(upload.getbuffer())
+    digest = hashlib.sha256(payload).hexdigest()[:16]
+    os.makedirs(directory, exist_ok=True)
+    hashed_path = os.path.join(directory, f"{prefix}_{digest}.{extension.lstrip('.')}")
+    stable_path = os.path.join(directory, stable_name) if stable_name else hashed_path
+    previous_digest = st.session_state.get(session_digest_key)
+    if previous_digest != digest or not os.path.isfile(hashed_path):
+        with open(hashed_path, "wb") as handle:
+            handle.write(payload)
+        if stable_name and os.path.abspath(hashed_path) != os.path.abspath(stable_path):
+            with open(stable_path, "wb") as handle:
+                handle.write(payload)
+        st.session_state[session_digest_key] = digest
+        st.session_state[session_path_key] = stable_path if stable_name else hashed_path
+    return st.session_state.get(session_path_key) or (stable_path if stable_name else hashed_path)
+
+
 @st.fragment(run_every=2)
 def render_live_generation_status(output_dir: str) -> None:
     """Show durable render progress and its live event terminal on the Generate tab."""
@@ -99,12 +139,7 @@ def render_live_generation_status(output_dir: str) -> None:
                     st.progress(progress, text=f"{_workflow_label(stage)} — {progress}% · {message}")
                 with col_btn:
                     if st.button("Stop", key=f"cancel_{record['job_id']}"):
-                        from history_reels import job_manager
-                        try:
-                            job_manager.cancel_job(record['job_id'])
-                        except AttributeError:
-                            manager = get_job_manager(config.JOB_WORKER_MODE)
-                            manager.cancel(config.OUTPUT_DIR, record['job_id'])
+                        _cancel_render_job(config.OUTPUT_DIR, record["job_id"])
                         st.rerun()
 
                 current_index = next((index for index, (name, _) in enumerate(WORKFLOW_STAGES) if name == stage), 0)
@@ -143,6 +178,27 @@ def render_live_generation_status(output_dir: str) -> None:
                 st.caption("Live pipeline events refresh every 2 seconds. Provider/API secrets are never shown here.")
                 st.code("\n".join(terminal_lines), language="text", wrap_lines=True)
 
+    tracked_ids = st.session_state.get("latest_render_job_ids", [])
+    tracked_records = [record for record in recent_jobs if record.get("job_id") in tracked_ids]
+    completed_current_records = completed_deliverable_records(tracked_records)
+    if not completed_current_records:
+        completed_current_records = completed_deliverable_records(recent_jobs[:1])
+    if completed_current_records:
+        if "notified_jobs" not in st.session_state:
+            st.session_state["notified_jobs"] = set()
+        
+        new_jobs = [r for r in completed_current_records if r["job_id"] not in st.session_state["notified_jobs"]]
+        if new_jobs:
+            st.balloons()
+            for r in new_jobs:
+                st.session_state["notified_jobs"].add(r["job_id"])
+                
+        render_completed_deliverables(
+            completed_current_records,
+            key_prefix="create_complete",
+            heading="### ✅ Latest completed reel",
+        )
+
 
 def reconcile_interrupted_thread_jobs(output_dir: str) -> int:
     """Clear misleading queued records left behind after a dashboard restart."""
@@ -177,7 +233,8 @@ def render_completed_deliverables(records: list[dict], *, key_prefix: str, headi
         created = str(record.get("updated_at") or record.get("created_at") or "").replace("T", " ")[:19]
 
         with st.container(border=True):
-            st.markdown(f"<div class='gallery-card-title'>✅ {title}</div>", unsafe_allow_html=True)
+            safe_title = html.escape(str(title))
+            st.markdown(f"<div class='gallery-card-title'>✅ {safe_title}</div>", unsafe_allow_html=True)
             try:
                 file_size = os.path.getsize(video_path)
             except FileNotFoundError:
@@ -188,7 +245,7 @@ def render_completed_deliverables(records: list[dict], *, key_prefix: str, headi
                 st.video(video_path)
                 st.download_button(
                     "⬇️ Download MP4",
-                    data=open(video_path, "rb"),
+                    data=Path(video_path).read_bytes(),
                     file_name=os.path.basename(video_path),
                     mime="video/mp4",
                     key=f"{key_prefix}_video_{job_id}",
@@ -196,8 +253,7 @@ def render_completed_deliverables(records: list[dict], *, key_prefix: str, headi
                 )
             with seo_col:
                 if os.path.isfile(seo_path):
-                    with open(seo_path, "r", encoding="utf-8") as seo_file:
-                        seo_content = seo_file.read()
+                    seo_content = Path(seo_path).read_text(encoding="utf-8")
                     st.text_area("SEO package", value=seo_content, height=250, key=f"{key_prefix}_seo_{job_id}")
                     st.download_button(
                         "⬇️ Download SEO package",
@@ -885,14 +941,19 @@ with st.sidebar:
                 valid, reason = validate_uploaded_file(intro_vid, "mp4")
                 if not valid:
                     st.error(f"Intro video rejected: {reason}")
+                    config.INTRO_BUMPER = st.session_state.get("intro_bumper_path")
                 else:
-                    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-                    intro_path = os.path.join(config.OUTPUT_DIR, f"intro_bumper_{uuid.uuid4().hex[:8]}.mp4")
-                    with open(intro_path, "wb") as f:
-                        f.write(intro_vid.getbuffer())
-                    config.INTRO_BUMPER = intro_path
+                    config.INTRO_BUMPER = _save_uploaded_asset(
+                        intro_vid,
+                        directory=config.OUTPUT_DIR,
+                        prefix="intro_bumper",
+                        extension="mp4",
+                        session_path_key="intro_bumper_path",
+                        session_digest_key="intro_bumper_digest",
+                    )
+                    st.caption("Intro bumper ready (content-hash stable path).")
             else:
-                config.INTRO_BUMPER = None
+                config.INTRO_BUMPER = st.session_state.get("intro_bumper_path")
             
         with col_outro:
             outro_vid = st.file_uploader("Upload Outro Bumper (.mp4)", type=["mp4"])
@@ -900,14 +961,19 @@ with st.sidebar:
                 valid, reason = validate_uploaded_file(outro_vid, "mp4")
                 if not valid:
                     st.error(f"Outro video rejected: {reason}")
+                    config.OUTRO_BUMPER = st.session_state.get("outro_bumper_path")
                 else:
-                    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-                    outro_path = os.path.join(config.OUTPUT_DIR, f"outro_bumper_{uuid.uuid4().hex[:8]}.mp4")
-                    with open(outro_path, "wb") as f:
-                        f.write(outro_vid.getbuffer())
-                    config.OUTRO_BUMPER = outro_path
+                    config.OUTRO_BUMPER = _save_uploaded_asset(
+                        outro_vid,
+                        directory=config.OUTPUT_DIR,
+                        prefix="outro_bumper",
+                        extension="mp4",
+                        session_path_key="outro_bumper_path",
+                        session_digest_key="outro_bumper_digest",
+                    )
+                    st.caption("Outro bumper ready (content-hash stable path).")
             else:
-                config.OUTRO_BUMPER = None
+                config.OUTRO_BUMPER = st.session_state.get("outro_bumper_path")
             
         # Progress Bar Settings
         show_bar = st.checkbox("Show Video Progress Bar", value=True, help="Draws an animated growing timeline line at the bottom of the video.")
@@ -936,17 +1002,27 @@ with st.sidebar:
                 if not valid:
                     st.error(f"Logo rejected: {reason}")
                 else:
-                    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-                    logo_path = os.path.join(config.OUTPUT_DIR, f"watermark_{uuid.uuid4().hex[:8]}.png")
-                    with open(logo_path, "wb") as f:
-                        f.write(logo_file.getbuffer())
-                    st.session_state["watermark_logo_path"] = logo_path
+                    logo_path = _save_uploaded_asset(
+                        logo_file,
+                        directory=config.OUTPUT_DIR,
+                        prefix="watermark",
+                        extension="png",
+                        session_path_key="watermark_logo_path",
+                        session_digest_key="watermark_logo_digest",
+                        stable_name="watermark.png",
+                    )
+                    config.WATERMARK_PATH = logo_path
                     st.success("Logo uploaded successfully!")
             
             # Check if logo exists to enable size/opacity settings
-            logo_path = st.session_state.get("watermark_logo_path", os.path.join(config.OUTPUT_DIR, "watermark.png"))
-            if os.path.exists(logo_path):
-                st.image(logo_path, caption="Active Watermark Logo", width=100)
+            logo_path = (
+                st.session_state.get("watermark_logo_path")
+                or str(getattr(config, "WATERMARK_PATH", "") or "").strip()
+                or os.path.join(config.OUTPUT_DIR, "watermark.png")
+            )
+            config.WATERMARK_PATH = logo_path if os.path.exists(logo_path) else ""
+            if config.WATERMARK_PATH and os.path.exists(config.WATERMARK_PATH):
+                st.image(config.WATERMARK_PATH, caption="Active Watermark Logo", width=100)
                 logo_size = st.slider("Logo Size (width in px)", min_value=40, max_value=250, value=100)
                 config.WATERMARK_SIZE = logo_size
                 logo_opacity = st.slider("Logo Opacity", min_value=0.1, max_value=1.0, value=0.5, step=0.05)
@@ -966,6 +1042,8 @@ with st.sidebar:
                 config.WATERMARK_POSITION = pos_map[pos_selection]
             else:
                 st.warning("⚠️ Please upload a PNG logo to see settings.")
+        else:
+            config.WATERMARK_PATH = ""
 
     with st.expander("🔑 API Key Status", expanded=False):
         key_definitions = [
@@ -980,42 +1058,59 @@ with st.sidebar:
             ("Storyblocks Private Key", "STORYBLOCKS_PRIVATE_KEY"),
         ]
         configured = [label for label, attribute in key_definitions if bool(getattr(config, attribute, ""))]
-        st.caption(f"{len(configured)}/{len(key_definitions)} key(s) configured. Values remain hidden; leave a field blank to keep its existing value.")
-        st.info("New values are saved only to this computer's local `.env` file and applied immediately. Do not enable this dashboard for untrusted public users.")
-        updates = {}
-        for label, attribute in key_definitions:
-            status = "configured" if bool(getattr(config, attribute, "")) else "not configured"
-            updates[attribute] = st.text_input(
-                label,
-                value="",
-                type="password",
-                placeholder=f"Currently {status}; enter a replacement to change it",
-                key=f"saved_{attribute.lower()}",
+        st.caption(f"{len(configured)}/{len(key_definitions)} key(s) configured via environment. Values are never displayed.")
+        if not dashboard_auth_required():
+            st.warning("Dashboard auth is off — intended for local single-user use only. Set `DASHBOARD_REQUIRE_AUTH=true` before public hosting.")
+
+        allow_key_entry = session_key_override_allowed()
+        if not allow_key_entry:
+            st.info(
+                "Browser key entry is disabled. Configure keys via the host environment / secret store "
+                "(set `DASHBOARD_ALLOW_SESSION_KEY_OVERRIDE=true` only for trusted local machines)."
             )
-        if st.button("Save API keys locally", width="stretch"):
-            try:
-                saved = save_local_env_values(
-                    os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
-                    updates,
+            for label, attribute in key_definitions:
+                status = "configured" if bool(getattr(config, attribute, "")) else "not configured"
+                st.caption(f"{label}: **{status}**")
+        else:
+            st.info("New values are saved only to this computer's local `.env` file and applied immediately.")
+            updates = {}
+            for label, attribute in key_definitions:
+                status = "configured" if bool(getattr(config, attribute, "")) else "not configured"
+                updates[attribute] = st.text_input(
+                    label,
+                    value="",
+                    type="password",
+                    placeholder=f"Currently {status}; enter a replacement to change it",
+                    key=f"saved_{attribute.lower()}",
                 )
-            except Exception as error:
-                st.error(f"Could not save local API settings: {error}")
-            else:
-                for attribute in saved:
-                    value = updates[attribute].strip()
-                    setattr(config, attribute, value)
-                if saved:
-                    st.toast(f"Saved and applied {len(saved)} API key(s) locally.", icon="🔐")
-                    st.rerun()
-                st.info("No new key was entered; existing configuration was kept unchanged.")
+            if st.button("Save API keys locally", width="stretch"):
+                if not session_key_override_allowed():
+                    st.error("Saving API keys from the browser is disabled on this host.")
+                else:
+                    try:
+                        saved = save_local_env_values(
+                            os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
+                            updates,
+                        )
+                    except Exception as error:
+                        st.error(f"Could not save local API settings: {error}")
+                    else:
+                        for attribute in saved:
+                            value = updates[attribute].strip()
+                            setattr(config, attribute, value)
+                        if saved:
+                            st.toast(f"Saved and applied {len(saved)} API key(s) locally.", icon="🔐")
+                            st.rerun()
+                        st.info("No new key was entered; existing configuration was kept unchanged.")
 
 # Top Metrics Dashboard
 try:
     from history_reels.job_store import get_dashboard_metrics
     metrics_data = get_dashboard_metrics(config.OUTPUT_DIR)
-    total_vids = metrics_data.get("total_videos", 0)
-    storage_str = metrics_data.get("storage_used", "0 B")
-except ImportError:
+    total_vids = metrics_data.get("total_completed_videos", 0)
+    storage_str = _format_file_size(int(metrics_data.get("total_storage_bytes") or 0))
+except Exception:
+    metrics_data = {}
     total_vids = "—"
     storage_str = "—"
 
@@ -1175,7 +1270,7 @@ with tabs[0]:
         st.markdown(
             f"<div style='margin-bottom:1rem; padding:0.8rem; background:rgba(255,215,0,0.05); border-radius:8px; border:1px solid rgba(255,215,0,0.2);'>"
             f"<b>Active Profile</b><br>"
-            f"🧠 AI: <code>{provider}</code><br>"
+            f"🧠 AI: <code>{active_model_name}</code><br>"
             f"🗣️ Voice: <code>{config.VOICE_PROVIDER}</code><br>"
             f"🎬 Media: <code>{config.MEDIA_PREFERENCE}</code>"
             f"</div>",
@@ -1308,30 +1403,6 @@ with tabs[0]:
             st.info("Follow the live stage tracker below. The completed video and its SEO package will appear here automatically.")
 
     render_live_generation_status(config.OUTPUT_DIR)
-    try:
-        current_records = JobStore(config.OUTPUT_DIR).list_jobs(limit=25)
-    except OSError:
-        current_records = []
-    tracked_ids = st.session_state.get("latest_render_job_ids", [])
-    tracked_records = [record for record in current_records if record.get("job_id") in tracked_ids]
-    completed_current_records = completed_deliverable_records(tracked_records)
-    if not completed_current_records:
-        completed_current_records = completed_deliverable_records(current_records[:1])
-    if completed_current_records:
-        if "notified_jobs" not in st.session_state:
-            st.session_state["notified_jobs"] = set()
-        
-        new_jobs = [r for r in completed_current_records if r["job_id"] not in st.session_state["notified_jobs"]]
-        if new_jobs:
-            st.balloons()
-            for r in new_jobs:
-                st.session_state["notified_jobs"].add(r["job_id"])
-                
-        render_completed_deliverables(
-            completed_current_records,
-            key_prefix="create_complete",
-            heading="### ✅ Latest completed reel",
-        )
 
 # Tab 2: Reel library and job history
 with tabs[1]:
@@ -1380,7 +1451,7 @@ with tabs[1]:
                     else:
                         progress_col.caption(f"{_workflow_label(record.get('current_stage'))} · Needs attention")
                     if status in {"queued", "running"}:
-                        if action_col.button("Cancel", key=f"cancel_{job_id}"):
+                        if action_col.button("Cancel", key=f"cancel_hist_{job_id}"):
                             manager.cancel(config.OUTPUT_DIR, job_id)
                             st.rerun()
                     elif status in {"failed", "cancelled"}:
@@ -1439,13 +1510,18 @@ with tabs[1]:
                     file_size = 0
                 
                 with st.container(border=True):
-                    st.markdown(f"<div class='gallery-card-title' style='font-size:1rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;' title='{file_title}'>🎬 {file_title}</div>", unsafe_allow_html=True)
+                    safe_file_title = html.escape(str(file_title))
+                    st.markdown(
+                        f"<div class='gallery-card-title' style='font-size:1rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;' title='{safe_file_title}'>🎬 {safe_file_title}</div>",
+                        unsafe_allow_html=True,
+                    )
                     st.caption(f"{modified} · {_format_file_size(file_size)}")
                     st.video(video_path)
                     
+                    vid_data = Path(video_path).read_bytes()
                     st.download_button(
                         "⬇️ MP4",
-                        data=open(video_path, "rb"),
+                        data=vid_data,
                         file_name=file_basename,
                         mime="video/mp4",
                         key=f"grid_dl_vid_{idx}_{file_basename}",
@@ -1453,8 +1529,7 @@ with tabs[1]:
                     )
                     
                     if os.path.exists(txt_path):
-                        with open(txt_path, "r", encoding="utf-8") as seo_file:
-                            seo_content = seo_file.read()
+                        seo_content = Path(txt_path).read_text(encoding="utf-8")
                         st.download_button(
                             "⬇️ SEO",
                             data=seo_content,

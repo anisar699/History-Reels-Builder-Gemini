@@ -1,20 +1,23 @@
 import os
-import subprocess
 from history_reels.jobs import GenerationJob
 from history_reels.subtitles import write_ass_subtitles
+from history_reels.ffmpeg_runner import (
+    AUDIO_TIMEOUT_SECONDS,
+    CLIP_TIMEOUT_SECONDS,
+    MERGE_TIMEOUT_SECONDS,
+    get_media_dimensions,
+    run_command,
+    write_fontconfig_file,
+)
+
 
 def get_video_dimensions(path):
-    cmd = [
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height", "-of", "csv=p=0", path
-    ]
-    try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL)
-        parts = res.stdout.strip().split(",")
-        return int(parts[0]), int(parts[1])
-    except (subprocess.CalledProcessError, IndexError, ValueError) as e:
-        print(f"Warning: Could not read dimensions of {path}: {e}")
-        return 0, 0
+    return get_media_dimensions(path)
+
+
+def _job_id(job: GenerationJob) -> str | None:
+    return str(getattr(job, "job_id", "") or "") or None
+
 
 def build_video_frames(job: GenerationJob, voice_dur):
     print("Extracting clips from source videos...")
@@ -66,17 +69,6 @@ def build_video_frames(job: GenerationJob, voice_dur):
                 if crop_h % 2 != 0:
                     crop_h += 1
 
-            if (w / h) > target_aspect:
-                crop_h = h
-                crop_w = int(h * target_aspect)
-                if crop_w % 2 != 0:
-                    crop_w += 1
-            else:
-                crop_w = w
-                crop_h = int(w / target_aspect)
-                if crop_h % 2 != 0:
-                    crop_h += 1
-
             crop_w = min(crop_w, w - (w % 2))
             crop_h = min(crop_h, h - (h % 2))
             offset_x = max(0, (w - crop_w) // 2)
@@ -87,7 +79,7 @@ def build_video_frames(job: GenerationJob, voice_dur):
                 "ffmpeg", "-y", "-ss", "0.0", "-stream_loop", "-1", "-i", raw_path_mp4, "-t", f"{clip_dur:.3f}",
                 "-vf", vf, "-an", "-r", str(job.FPS), "-pix_fmt", "yuv420p", clip_path
             ]
-            subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)
+            run_command(cmd, timeout=CLIP_TIMEOUT_SECONDS, job_id=_job_id(job), label="clip extract")
             
         else:
             # Process Image Clip (Convert to video using Ken Burns zoom effect)
@@ -102,7 +94,7 @@ def build_video_frames(job: GenerationJob, voice_dur):
                 "ffmpeg", "-y", "-i", img_path, "-t", f"{clip_dur:.3f}",
                 "-vf", vf_zoom, "-an", "-r", str(job.FPS), "-pix_fmt", "yuv420p", clip_path
             ]
-            subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)
+            run_command(cmd, timeout=CLIP_TIMEOUT_SECONDS, job_id=_job_id(job), label="image ken-burns")
         
     print("Crossfading clips...")
     silent_temp = os.path.join(job.TOPIC_TEMP_DIR, "silent_temp.mp4")
@@ -115,7 +107,7 @@ def build_video_frames(job: GenerationJob, voice_dur):
         
     filter_parts = []
     last_label = "0:v"
-    curr_offset = clip_dur - job.CROSSFADE_DUR
+    curr_offset = max(0, clip_dur - job.CROSSFADE_DUR)
     job.TRANSITION_OFFSETS = []
     
     transition_style = str(getattr(job, "VIDEO_TRANSITION", "fade")).lower()
@@ -144,32 +136,11 @@ def build_video_frames(job: GenerationJob, voice_dur):
         "-filter_complex", filter_complex,
         "-map", f"[{last_label}]", "-r", str(job.FPS), silent_temp
     ])
-    subprocess.run(cmd_fade, check=True, stdin=subprocess.DEVNULL)
+    run_command(cmd_fade, timeout=MERGE_TIMEOUT_SECONDS, job_id=_job_id(job), label="clip crossfade")
 
 def setup_fontconfig(job: GenerationJob):
-    font_dirs = {
-        os.path.dirname(os.path.abspath(job.FONT_PATH)),
-        os.path.join(job.OUTPUT_DIR, "fonts"),
-        getattr(job, "ASSETS_DIR", ""),
-    }
-    font_dir_lines = "\n".join(
-        f"    <dir>{directory.replace('\\', '/')}</dir>"
-        for directory in sorted(font_dirs)
-        if directory
-    )
-    
-    fonts_conf_content = f"""<?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
-<fontconfig>
-{font_dir_lines}
-</fontconfig>
-"""
-    fonts_conf_path = os.path.join(job.TOPIC_TEMP_DIR, "fonts.conf")
-    with open(fonts_conf_path, "w", encoding="utf-8") as f:
-        f.write(fonts_conf_content)
-        
-    os.environ["FONTCONFIG_FILE"] = fonts_conf_path
-    print(f"Fontconfig local file configured: {fonts_conf_path}")
+    """Write a job-local fonts.conf and return its path (no global FONTCONFIG_FILE mutation)."""
+    return write_fontconfig_file(job)
 
 def generate_whoosh_sound(job: GenerationJob):
     whoosh_path = os.path.join(job.TOPIC_TEMP_DIR, "whoosh.wav")
@@ -181,7 +152,7 @@ def generate_whoosh_sound(job: GenerationJob):
         "-af", "volume='sin(PI*t/0.5)':eval=frame",
         whoosh_path
     ]
-    subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)
+    run_command(cmd, timeout=30, job_id=_job_id(job), label="whoosh sfx")
     return whoosh_path
 
 def run_ffmpeg(job: GenerationJob, voice_dur):
@@ -228,7 +199,10 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
         for j, off in enumerate(offsets):
             offset_ms = int(off * 1000)
             filter_parts.append(f"[w{j}]adelay={offset_ms}|{offset_ms},volume=0.45[whoosh{j}]")
-        filter_parts.append("".join(f"[whoosh{j}]" for j in range(num_t)) + f"amix=inputs={num_t}:duration=longest[whoosh_mix]")
+        if num_t == 1:
+            filter_parts.append("[whoosh0]acopy[whoosh_mix]")
+        else:
+            filter_parts.append("".join(f"[whoosh{j}]" for j in range(num_t)) + f"amix=inputs={num_t}:duration=longest[whoosh_mix]")
         filter_parts.append("[music][voice][whoosh_mix]amix=inputs=3:duration=longest:dropout_transition=2[pre_out]")
     else:
         filter_parts.append("[music][voice]amix=inputs=2:duration=longest:dropout_transition=2[pre_out]")
@@ -269,12 +243,12 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
         "-filter_complex", filter_complex,
         "-map", audio_output_label, drone_wav
     ])
-    subprocess.run(cmd_audio, check=True, stdin=subprocess.DEVNULL)
+    run_command(cmd_audio, timeout=AUDIO_TIMEOUT_SECONDS, job_id=_job_id(job), label="audio mix")
     
     # Write ASS captions using the selected sidebar font configuration.
     ass_path = os.path.join(job.TOPIC_TEMP_DIR, "subtitles.ass")
     write_ass_subtitles(ass_path, job)
-    setup_fontconfig(job)
+    fonts_conf_path = setup_fontconfig(job)
     
     print("Merging audio and video with color grading, fades, ASS subtitles, and custom overlays...")
     output_mp4 = os.path.join(job.TOPIC_TEMP_DIR, "output.mp4")
@@ -338,8 +312,9 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
         
     # 3. Watermark Logo Overlay
     show_logo = getattr(job, "SHOW_WATERMARK", False)
-    logo_path = os.path.join(job.OUTPUT_DIR, "watermark.png")
-    has_logo = show_logo and os.path.exists(logo_path)
+    configured_logo = str(getattr(job, "WATERMARK_PATH", "") or "").strip()
+    logo_path = configured_logo or os.path.join(job.OUTPUT_DIR, "watermark.png")
+    has_logo = show_logo and bool(logo_path) and os.path.exists(logo_path)
     
     if has_logo:
         logo_size = getattr(job, "WATERMARK_SIZE", 100)
@@ -365,5 +340,12 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-preset", "fast",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "output.mp4"
     ])
-    subprocess.run(cmd_merge, check=True, cwd=job.TOPIC_TEMP_DIR, stdin=subprocess.DEVNULL)
-
+    # Pass FONTCONFIG_FILE only into this subprocess — never mutate global os.environ.
+    run_command(
+        cmd_merge,
+        timeout=MERGE_TIMEOUT_SECONDS,
+        cwd=job.TOPIC_TEMP_DIR,
+        env={"FONTCONFIG_FILE": fonts_conf_path},
+        job_id=_job_id(job),
+        label="final merge",
+    )

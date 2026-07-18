@@ -13,14 +13,21 @@ from history_reels.cli import check_inputs, copy_deliverables, download_visuals,
 from history_reels.font_manager import get_font_preset, prepare_caption_font
 from history_reels.music_library import local_track_command, resolve_music_vibe
 from history_reels.job_manager import JobManager
-from history_reels.job_store import JobStore, categorize_error
+from history_reels.job_store import JobStore, categorize_error, snapshot_safe_settings, get_dashboard_metrics
 from history_reels.input_validation import validate_external_url, validate_uploaded_file
 from history_reels.jobs import create_generation_job
 from history_reels.news_scraper import fetch_public_response
 from history_reels.renderer import build_video_frames, run_ffmpeg
 from history_reels.security import dashboard_auth_required, hash_password, save_local_env_values, session_key_override_allowed, verify_password
 from history_reels.script_generator import ScriptConfig, build_api_request_error, fetch_ai_script
-from history_reels.stock_media import download_clip_for_query, media_quality_score
+from history_reels.stock_media import (
+    accept_downloaded_image,
+    download_clip_for_query,
+    effective_min_media_dimension,
+    media_quality_score,
+    _safe_error_message,
+)
+from history_reels.ffmpeg_runner import RenderError, kill_job_processes, run_command
 from history_reels.subtitles import write_ass_subtitles
 from history_reels.verification import run_verification_matrix, verify_deliverable
 from history_reels.voiceover import filter_voices_for_language
@@ -160,6 +167,19 @@ class TestHistoryReels(unittest.TestCase):
         self.assertTrue(verify_password("correct horse battery staple", stronger_hash))
         self.assertFalse(verify_password("wrong password", stronger_hash))
 
+        # Public auth on + override unset => browser key entry blocked.
+        cleaned = {
+            key: value for key, value in os.environ.items()
+            if key not in {"DASHBOARD_REQUIRE_AUTH", "DASHBOARD_ALLOW_SESSION_KEY_OVERRIDE"}
+        }
+        with patch.dict(os.environ, {**cleaned, "DASHBOARD_REQUIRE_AUTH": "true"}, clear=True):
+            self.assertTrue(dashboard_auth_required())
+            self.assertFalse(session_key_override_allowed())
+        # Local desktop (auth off) + override unset => key save allowed.
+        with patch.dict(os.environ, cleaned, clear=True):
+            self.assertFalse(dashboard_auth_required())
+            self.assertTrue(session_key_override_allowed())
+
     def test_renderer_uses_the_job_transition_snapshot(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             for index in range(1, 5):
@@ -174,7 +194,7 @@ class TestHistoryReels(unittest.TestCase):
                 FPS=25,
                 VIDEO_TRANSITION="slideleft",
             )
-            with patch("history_reels.renderer.subprocess.run") as run:
+            with patch("history_reels.renderer.run_command") as run:
                 build_video_frames(job, voice_dur=20.0)
             final_command = run.call_args_list[-1].args[0]
             filter_graph = final_command[final_command.index("-filter_complex") + 1]
@@ -196,7 +216,7 @@ class TestHistoryReels(unittest.TestCase):
             )
             with (
                 patch("history_reels.renderer.get_video_dimensions", return_value=(720, 1280)),
-                patch("history_reels.renderer.subprocess.run") as run,
+                patch("history_reels.renderer.run_command") as run,
             ):
                 build_video_frames(job, voice_dur=20.0)
 
@@ -254,9 +274,9 @@ class TestHistoryReels(unittest.TestCase):
                 FONT_PATH=font_path,
             )
             with (
-                patch("history_reels.renderer.subprocess.run") as run,
+                patch("history_reels.renderer.run_command") as run,
                 patch("history_reels.renderer.write_ass_subtitles") as subtitles,
-                patch("history_reels.renderer.setup_fontconfig") as fontconfig,
+                patch("history_reels.renderer.setup_fontconfig", return_value=os.path.join(temp_dir, "fonts.conf")) as fontconfig,
             ):
                 run_ffmpeg(job, voice_dur=12.0)
 
@@ -269,6 +289,10 @@ class TestHistoryReels(unittest.TestCase):
             self.assertIn("subtitles=", merge_filter)
             subtitles.assert_called_once()
             fontconfig.assert_called_once_with(job)
+            # FONTCONFIG_FILE is injected only into the merge subprocess env.
+            merge_kwargs = run.call_args_list[-1].kwargs
+            self.assertIn("env", merge_kwargs)
+            self.assertIn("FONTCONFIG_FILE", merge_kwargs["env"])
 
     def test_config_initialization(self):
         self.assertIsNotNone(config.TEMP_DIR)
@@ -583,7 +607,8 @@ class TestHistoryReels(unittest.TestCase):
             job.OUTPUT_NAME = "Completed Reel"
             store = JobStore(temp_dir)
             store.create_job(job, {"label": "Completed Reel", "provider": "auto"})
-            store.mark_succeeded(job)
+            self.assertTrue(store.claim_job(job.job_id))
+            self.assertTrue(store.mark_succeeded(job))
             record = store.list_jobs(limit=1)[0]
             self.assertEqual(record["output_video_path"], os.path.join(temp_dir, "Completed Reel.mp4"))
             self.assertEqual(record["output_seo_path"], os.path.join(temp_dir, "Completed Reel.txt"))
@@ -852,6 +877,211 @@ class TestHistoryReels(unittest.TestCase):
         manual_data = generate.call_args.kwargs["manual_script_data"]
         self.assertEqual(manual_data["captions"], ["Caption one"])
         self.assertEqual(manual_data["narrations"], ["Narration one"])
+
+    def test_snapshot_safe_settings_strips_private_and_public_keys(self):
+        job = SimpleNamespace(values={
+            "TOPIC_TITLE": "Printing press",
+            "PEXELS_API_KEY": "pexels-secret",
+            "STORYBLOCKS_PRIVATE_KEY": "story-private",
+            "STORYBLOCKS_PUBLIC_KEY": "story-public",
+            "TARGET_DURATION": 30,
+        })
+        snapshot = snapshot_safe_settings(job)
+        self.assertEqual(snapshot.get("TOPIC_TITLE"), "Printing press")
+        self.assertEqual(snapshot.get("TARGET_DURATION"), 30)
+        self.assertNotIn("PEXELS_API_KEY", snapshot)
+        self.assertNotIn("STORYBLOCKS_PRIVATE_KEY", snapshot)
+        self.assertNotIn("STORYBLOCKS_PUBLIC_KEY", snapshot)
+
+    def test_stock_media_safe_error_redacts_query_keys(self):
+        message = _safe_error_message(
+            Exception("https://pixabay.com/api/videos/?key=super-secret&q=ocean HTTP 403")
+        )
+        self.assertNotIn("super-secret", message)
+        self.assertIn("key=***", message)
+
+    def test_renderer_uses_job_watermark_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            logo_path = os.path.join(temp_dir, "brand_logo.png")
+            Path(logo_path).write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
+            font_path = os.path.join(temp_dir, "font.ttf")
+            Path(font_path).write_bytes(b"0" * 64)
+            job = SimpleNamespace(
+                TOPIC_TEMP_DIR=temp_dir,
+                MUSIC_DIR=temp_dir,
+                BG_MUSIC_VIBE="mystery",
+                BG_MUSIC_TRACK_INDEX=1,
+                AUDIO_DUCKING=False,
+                VOICE_MASTERING=False,
+                TRANSITION_SFX=False,
+                AMBIENT_SOUND=None,
+                CAMERA_SHAKE=False,
+                TRANSITION_OFFSETS=[],
+                COLOR_FILTER=None,
+                CINEMATIC_GRAIN=False,
+                WATERMARK_TEXT="",
+                SHOW_PROGRESS_BAR=False,
+                SHOW_WATERMARK=True,
+                WATERMARK_PATH=logo_path,
+                WATERMARK_SIZE=80,
+                WATERMARK_OPACITY=0.4,
+                WATERMARK_POSITION="20:20",
+                OUTPUT_DIR=temp_dir,
+                FONT_PATH=font_path,
+            )
+            with (
+                patch("history_reels.renderer.run_command") as run,
+                patch("history_reels.renderer.write_ass_subtitles"),
+                patch("history_reels.renderer.setup_fontconfig", return_value=os.path.join(temp_dir, "fonts.conf")),
+            ):
+                run_ffmpeg(job, voice_dur=8.0)
+            merge_command = run.call_args_list[-1].args[0]
+            self.assertIn(logo_path, merge_command)
+
+    def test_bumper_stitch_normalizes_to_48k_and_reencodes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = os.path.join(temp_dir, "workspace")
+            output_dir = os.path.join(temp_dir, "output")
+            os.makedirs(source_dir)
+            os.makedirs(output_dir)
+            Path(source_dir, "output.mp4").write_bytes(b"video")
+            Path(source_dir, "output.txt").write_text("SEO package", encoding="utf-8")
+            intro = os.path.join(temp_dir, "intro.mp4")
+            Path(intro).write_bytes(b"intro")
+            job = SimpleNamespace(
+                TOPIC_TEMP_DIR=source_dir,
+                OUTPUT_DIR=output_dir,
+                video_path=os.path.join(output_dir, "reel.mp4"),
+                seo_path=os.path.join(output_dir, "reel.txt"),
+                INTRO_BUMPER=intro,
+                OUTRO_BUMPER=None,
+                VIDEO_WIDTH=720,
+                VIDEO_HEIGHT=1280,
+                FPS=25,
+            )
+
+            def fake_run(cmd, *args, **kwargs):
+                if cmd and cmd[0] == "ffprobe":
+                    return SimpleNamespace(stdout="", stderr="", returncode=0, args=cmd)
+                if cmd and cmd[0] == "ffmpeg":
+                    output = cmd[-1]
+                    if isinstance(output, str) and output.endswith(".mp4"):
+                        Path(output).write_bytes(b"normalized")
+                    return SimpleNamespace(returncode=0, stdout="", stderr="", args=cmd)
+                return SimpleNamespace(returncode=0, stdout="", stderr="", args=cmd)
+
+            with patch("history_reels.ffmpeg_runner.run_command", side_effect=fake_run):
+                self.assertTrue(copy_deliverables(job))
+
+            self.assertTrue(Path(job.video_path).is_file())
+            # Final stitched file should have been produced via re-encode (not demuxer -c copy).
+            with patch("history_reels.ffmpeg_runner.run_command", side_effect=fake_run) as run:
+                copy_deliverables(job)
+            ffmpeg_calls = [call.args[0] for call in run.call_args_list if call.args and call.args[0][0] == "ffmpeg"]
+            self.assertTrue(ffmpeg_calls)
+            concat_cmd = ffmpeg_calls[-1]
+            self.assertIn("-filter_complex", concat_cmd)
+            self.assertIn("concat=", concat_cmd[concat_cmd.index("-filter_complex") + 1])
+            # Stream-copy concat is no longer used; audio is forced to 48 kHz.
+            self.assertFalse(
+                any(cmd[i:i + 2] == ["-c", "copy"] for cmd in ffmpeg_calls for i in range(len(cmd) - 1))
+            )
+            self.assertTrue(any(str(part) == "48000" for cmd in ffmpeg_calls for part in cmd))
+
+    def test_dashboard_metrics_use_completed_and_storage_keys(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sample = Path(temp_dir, "sample.mp4")
+            sample.write_bytes(b"0" * 2048)
+            job = create_generation_job(SimpleNamespace(TEMP_DIR=temp_dir, OUTPUT_DIR=temp_dir))
+            job.OUTPUT_DIR = temp_dir
+            job.OUTPUT_NAME = "sample"
+            store = JobStore(temp_dir)
+            store.create_job(job, {"label": "Metrics", "provider": "auto"})
+            store.claim_job(job.job_id)
+            store.mark_succeeded(job)
+            metrics = get_dashboard_metrics(temp_dir)
+            self.assertIn("total_completed_videos", metrics)
+            self.assertIn("total_storage_bytes", metrics)
+            self.assertEqual(metrics["total_completed_videos"], 1)
+            self.assertGreaterEqual(metrics["total_storage_bytes"], 2048)
+
+    def test_claim_job_is_atomic_and_blocks_double_workers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            job = create_generation_job(SimpleNamespace(TEMP_DIR=temp_dir, OUTPUT_DIR=temp_dir))
+            store = JobStore(temp_dir)
+            store.create_job(job, {"label": "Atomic", "provider": "auto"})
+            self.assertTrue(store.claim_job(job.job_id))
+            self.assertFalse(store.claim_job(job.job_id))
+            self.assertEqual(store.get_job(job.job_id)["status"], "running")
+
+    def test_terminal_status_cannot_be_overwritten_by_late_success(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            job = create_generation_job(SimpleNamespace(TEMP_DIR=temp_dir, OUTPUT_DIR=temp_dir))
+            job.OUTPUT_NAME = "late"
+            store = JobStore(temp_dir)
+            store.create_job(job, {"label": "Late", "provider": "auto"})
+            store.claim_job(job.job_id)
+            store.request_cancellation(job.job_id)
+            store.mark_cancelled(job, "User cancelled")
+            self.assertFalse(store.mark_succeeded(job))
+            self.assertEqual(store.get_job(job.job_id)["status"], "cancelled")
+
+    def test_reconcile_marks_stuck_running_jobs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = SimpleNamespace(TEMP_DIR=temp_dir, OUTPUT_DIR=temp_dir)
+            job = create_generation_job(runtime)
+            store = JobStore(temp_dir)
+            store.create_job(job, {"label": "Stuck", "provider": "auto"})
+            store.claim_job(job.job_id)
+            manager = JobManager(mode="thread")
+            count = manager.reconcile_orphaned_thread_jobs(temp_dir)
+            self.assertGreaterEqual(count, 1)
+            self.assertEqual(store.get_job(job.job_id)["status"], "failed")
+
+    def test_media_quality_profile_floor_and_image_accept(self):
+        balanced = SimpleNamespace(MEDIA_QUALITY_PROFILE="balanced", MIN_MEDIA_DIMENSION=0)
+        high = SimpleNamespace(MEDIA_QUALITY_PROFILE="high", MIN_MEDIA_DIMENSION=0)
+        self.assertEqual(effective_min_media_dimension(balanced), 480)
+        self.assertEqual(effective_min_media_dimension(high), 720)
+        self.assertGreaterEqual(media_quality_score(1280, 720, high, 10), 0)
+        self.assertLess(media_quality_score(500, 500, high, 10), 0)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tiny = Path(temp_dir, "tiny.jpg")
+            tiny.write_bytes(b"not-an-image")
+            job = SimpleNamespace(MEDIA_QUALITY_PROFILE="balanced", MIN_MEDIA_DIMENSION=480)
+            with patch("history_reels.ffmpeg_runner.get_media_dimensions", return_value=(120, 90)):
+                self.assertFalse(accept_downloaded_image(str(tiny), job))
+            self.assertFalse(tiny.exists())
+
+    def test_run_command_raises_render_error_on_nonzero(self):
+        with patch("history_reels.ffmpeg_runner.subprocess.Popen") as popen:
+            process = popen.return_value
+            process.communicate.return_value = ("", "filter graph failed")
+            process.returncode = 1
+            process.poll.return_value = 1
+            with self.assertRaises(RenderError) as raised:
+                run_command(["ffmpeg", "-y", "broken"], timeout=5, label="test encode")
+            self.assertIn("filter graph failed", str(raised.exception))
+            self.assertEqual(raised.exception.returncode, 1)
+
+    def test_kill_job_processes_is_safe_when_empty(self):
+        self.assertEqual(kill_job_processes("missing-job"), 0)
+
+    def test_cleanup_keeps_workspace_when_flag_set(self):
+        from history_reels.cli import cleanup
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir, "workspace")
+            workspace.mkdir()
+            (workspace / "clip.mp4").write_bytes(b"x")
+            job = SimpleNamespace(
+                TOPIC_TEMP_DIR=str(workspace),
+                TEMP_DIR=temp_dir,
+                KEEP_WORKSPACE=True,
+            )
+            cleanup(job)
+            self.assertTrue(workspace.exists())
 
 if __name__ == "__main__":
     unittest.main()

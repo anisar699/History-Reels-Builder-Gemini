@@ -16,6 +16,9 @@ def run_job(output_dir: str, job_id: str) -> bool:
     record = store.get_job(job_id)
     if not record or record["status"] != "queued":
         return False
+    # Atomic claim prevents two process workers from executing the same job.
+    if not store.claim_job(job_id):
+        return False
     try:
         request = record["request_json"]
         job = create_generation_job(config)
@@ -25,6 +28,7 @@ def run_job(output_dir: str, job_id: str) -> bool:
         job.TOPIC_TEMP_DIR = record["workspace"]
         job.OUTPUT_DIR = output_dir
         job.history_store = store
+        job.status = "running"
         result = generate_video_for_topic(
             topic=request.get("topic"),
             provider=request.get("provider", "auto"),

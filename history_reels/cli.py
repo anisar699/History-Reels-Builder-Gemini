@@ -135,47 +135,78 @@ def copy_deliverables(job: GenerationJob):
     if not os.path.exists(src_txt):
         raise FileNotFoundError("SEO package was not created; final deliverables were not copied.")
     
-    import subprocess
+    from history_reels.ffmpeg_runner import has_audio_stream, run_command, CLIP_TIMEOUT_SECONDS, MERGE_TIMEOUT_SECONDS
+
     intro_path = getattr(job, "INTRO_BUMPER", None)
     outro_path = getattr(job, "OUTRO_BUMPER", None)
+    job_id = str(getattr(job, "job_id", "") or "") or None
     
     if intro_path or outro_path:
         print("Stitching Intro/Outro Bumpers...")
         concat_list = []
-        
-        def format_bumper(bumper_path, suffix):
-            tmp_bumper = os.path.join(job.TOPIC_TEMP_DIR, f"scaled_bumper_{suffix}.mp4")
-            vf = f"scale={job.VIDEO_WIDTH}:{job.VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,pad={job.VIDEO_WIDTH}:{job.VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2"
-            
-            # Ensure the bumper matches output.mp4 properties EXACTLY to prevent concat failures
-            cmd = [
-                "ffmpeg", "-y", "-i", bumper_path, 
-                "-vf", vf, "-r", str(job.FPS),
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", 
-                "-c:a", "aac", "-ar", "44100", "-b:a", "192k", 
-                tmp_bumper
-            ]
-            subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)
-            return tmp_bumper
+        target_w = int(getattr(job, "VIDEO_WIDTH", 720) or 720)
+        target_h = int(getattr(job, "VIDEO_HEIGHT", 1280) or 1280)
+        target_fps = int(getattr(job, "FPS", 25) or 25)
+
+        def normalize_segment(media_path: str, suffix: str, *, scale_to_frame: bool) -> str:
+            """Re-encode a segment to H.264/AAC 48 kHz stereo for safe concat."""
+            tmp_path = os.path.join(job.TOPIC_TEMP_DIR, f"normalized_{suffix}.mp4")
+            if scale_to_frame:
+                vf = (
+                    f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
+                    f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,"
+                    f"fps={target_fps},format=yuv420p"
+                )
+            else:
+                vf = f"fps={target_fps},format=yuv420p"
+
+            if has_audio_stream(media_path):
+                cmd = [
+                    "ffmpeg", "-y", "-i", media_path,
+                    "-vf", vf,
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
+                    tmp_path,
+                ]
+            else:
+                # Silent stereo pad so concat always has matching A/V streams.
+                cmd = [
+                    "ffmpeg", "-y", "-i", media_path,
+                    "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+                    "-vf", vf,
+                    "-map", "0:v:0", "-map", "1:a:0",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
+                    "-shortest",
+                    tmp_path,
+                ]
+            run_command(cmd, timeout=CLIP_TIMEOUT_SECONDS, job_id=job_id, label=f"normalize {suffix}")
+            return tmp_path
 
         if intro_path and os.path.exists(intro_path):
-            concat_list.append(format_bumper(intro_path, "intro"))
-        
-        concat_list.append(src_video)
-        
+            concat_list.append(normalize_segment(intro_path, "intro", scale_to_frame=True))
+
+        concat_list.append(normalize_segment(src_video, "main", scale_to_frame=False))
+
         if outro_path and os.path.exists(outro_path):
-            concat_list.append(format_bumper(outro_path, "outro"))
-            
-        list_txt = os.path.join(job.TOPIC_TEMP_DIR, "concat_list.txt")
-        with open(list_txt, "w") as f:
-            for item in concat_list:
-                item_clean = item.replace("\\", "/").replace("'", "'\\''")
-                f.write(f"file '{item_clean}'\n")
-                
+            concat_list.append(normalize_segment(outro_path, "outro", scale_to_frame=True))
+
         stitched_video = os.path.join(job.TOPIC_TEMP_DIR, "stitched_output.mp4")
-        cmd_concat = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_txt, "-c", "copy", stitched_video]
-        subprocess.run(cmd_concat, check=True, stdin=subprocess.DEVNULL)
-        
+        # Re-encode concat (never stream-copy) so bumper/main params cannot drift.
+        filter_inputs = "".join(f"[{index}:v:0][{index}:a:0]" for index in range(len(concat_list)))
+        filter_complex = f"{filter_inputs}concat=n={len(concat_list)}:v=1:a=1[v][a]"
+        cmd_concat = ["ffmpeg", "-y"]
+        for segment in concat_list:
+            cmd_concat.extend(["-i", segment])
+        cmd_concat.extend([
+            "-filter_complex", filter_complex,
+            "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
+            stitched_video,
+        ])
+        run_command(cmd_concat, timeout=MERGE_TIMEOUT_SECONDS, job_id=job_id, label="bumper stitch")
+
         shutil.copy2(stitched_video, final_video)
     else:
         shutil.copy2(src_video, final_video)
@@ -188,6 +219,13 @@ def copy_deliverables(job: GenerationJob):
     return True
 
 def cleanup(job: GenerationJob):
+    keep = bool(getattr(job, "KEEP_WORKSPACE", False))
+    if not keep:
+        env_flag = str(os.environ.get("KEEP_WORKSPACE", "")).strip().lower()
+        keep = env_flag in {"1", "true", "yes", "on"}
+    if keep:
+        print(f"Keeping job workspace for inspection: {job.TOPIC_TEMP_DIR}")
+        return
     print("Cleaning up temporary topic files...")
     if os.path.exists(job.TOPIC_TEMP_DIR) and job.TOPIC_TEMP_DIR != job.TEMP_DIR:
         try:
@@ -222,12 +260,29 @@ def _start_job_lifecycle(job: GenerationJob, request):
         if not job.history_store:
             job.history_store = JobStore(job.OUTPUT_DIR)
             job.history_store.create_job(job, request)
-        job.history_store.mark_running(job.job_id)
+        record = job.history_store.get_job(job.job_id)
+        # Process workers may already own the job via claim_job().
+        if not record or record.get("status") != "running":
+            claimed = job.history_store.claim_job(job.job_id)
+            if not claimed:
+                latest = job.history_store.get_job(job.job_id)
+                if latest and latest.get("cancel_requested"):
+                    raise JobCancelledError("Generation cancelled before the worker started.")
+                if latest and latest.get("status") in {"succeeded", "failed", "cancelled"}:
+                    raise RuntimeError(f"Job is already terminal ({latest.get('status')}).")
+                if not latest or latest.get("status") != "running":
+                    raise RuntimeError("Could not claim generation job for execution.")
         job.status = "running"
         _report_job(job, "starting", 1, "Preparing isolated job workspace.")
+    except JobCancelledError:
+        raise
     except Exception as error:
         # A history write failure should not make an otherwise valid local
         # render unusable; surface it in logs and continue without persistence.
+        if isinstance(error, RuntimeError) and "claim" in str(error).lower():
+            raise
+        if isinstance(error, RuntimeError) and "terminal" in str(error).lower():
+            raise
         job.history_store = None
         print(f"Job history warning: {error}")
 
@@ -238,7 +293,11 @@ def _finish_job(job: GenerationJob, status: str, error_message: str = ""):
         return
     try:
         if status == "succeeded":
-            job.history_store.mark_succeeded(job)
+            # Late success after cancel is ignored by the store FSM.
+            if not job.history_store.mark_succeeded(job):
+                latest = job.history_store.get_job(job.job_id)
+                if latest and latest.get("status") == "cancelled":
+                    job.status = "cancelled"
         elif status == "cancelled":
             job.history_store.mark_cancelled(job, error_message)
         else:
@@ -343,6 +402,10 @@ def generate_video_for_topic(topic, provider="gemini", manual_script_data=None, 
             print("check_inputs failed. Skipping.")
             job.last_error = err_msg
             _finish_job(job, "failed", err_msg)
+            try:
+                cleanup(job)
+            except Exception:
+                pass
             return False
             
         _report_job(job, "voice", 35, "Generating voiceover.")
@@ -365,7 +428,13 @@ def generate_video_for_topic(topic, provider="gemini", manual_script_data=None, 
         _report_job(job, "verify", 97, "Verifying final video and SEO deliverables.")
         verify_deliverable(job)
         cleanup(job)
+        # If cancel arrived during the final stages, do not report success.
+        if job.history_store and job.history_store.cancellation_requested(job.job_id):
+            raise JobCancelledError("Generation cancelled before success was recorded.")
         _finish_job(job, "succeeded")
+        if job.status == "cancelled":
+            print("Render finished but was marked cancelled; deliverables may be incomplete.")
+            return False
         print(f"SUCCESS! Created video: {job.OUTPUT_NAME}.mp4")
         return True
     except JobCancelledError as error:
@@ -373,6 +442,16 @@ def generate_video_for_topic(topic, provider="gemini", manual_script_data=None, 
         print(job.last_error)
         _finish_job(job, "cancelled", job.last_error)
         cleanup(job)
+        return False
+    except FileNotFoundError as e:
+        err_msg = f"Media File Error: {e}"
+        print(err_msg)
+        job.last_error = err_msg
+        _finish_job(job, "failed", err_msg)
+        try:
+            cleanup(job)
+        except Exception:
+            pass
         return False
     except Exception as e:
         err_msg = f"Failed to generate video for topic. Error: {e}"
@@ -395,9 +474,16 @@ def main():
     parser.add_argument("--news-url", type=str, help="Scrape news/article URL or RSS feed to generate reel")
     parser.add_argument("--csv", type=str, help="Path to CSV or Excel batch file")
     parser.add_argument("--provider", type=str, choices=["auto", "openai", "gemini", "groq", "ollama", "openrouter"], default="auto", help="AI provider (auto, openai, gemini, groq, ollama, or openrouter)")
+    parser.add_argument(
+        "--keep-workspace",
+        action="store_true",
+        help="Keep per-job temp workspace after success/failure for debugging.",
+    )
     args = parser.parse_args()
 
     provider = args.provider
+    if args.keep_workspace:
+        os.environ["KEEP_WORKSPACE"] = "1"
     
     if args.csv:
         try:

@@ -133,15 +133,44 @@ class JobManager:
         return result
 
     def cancel(self, output_dir: str, job_id: str) -> bool:
+        """Request cancellation, kill tracked media/worker processes, and finalize queued jobs."""
+        from history_reels.ffmpeg_runner import kill_job_processes
+
         store = JobStore(output_dir)
         requested = store.request_cancellation(job_id)
-        if requested:
+        record = store.get_job(job_id)
+        status = str((record or {}).get("status") or "")
+
+        # Queued jobs can be terminalized immediately; running jobs stay
+        # cancel_requested until the worker acknowledges or is killed.
+        if requested and status == "queued":
             placeholder = type("QueuedJob", (), {"job_id": job_id})()
             store.mark_cancelled(placeholder, "Cancellation requested")
+
         with self._lock:
             future = self._futures.get(job_id)
+            process = self._processes.get(job_id)
+
         if future:
             future.cancel()
+
+        # Hard-stop tracked ffmpeg/edge-tts children and process workers.
+        kill_job_processes(job_id)
+        if process and process.poll() is None:
+            try:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+            except OSError:
+                pass
+            # If the worker never got a chance to mark cancelled, finalize now.
+            latest = store.get_job(job_id)
+            if latest and latest.get("status") == "running":
+                placeholder = type("QueuedJob", (), {"job_id": job_id})()
+                store.mark_cancelled(placeholder, "Cancellation forced by stopping the worker process.")
         return requested
 
     def recover_queued(self, output_dir: str) -> int:
@@ -164,8 +193,8 @@ class JobManager:
         """Turn jobs stranded by a dashboard restart into retryable failures.
 
         Thread workers only live for the lifetime of the Streamlit process.
-        Their queued records are otherwise misleading after a restart because
-        there is no worker left that can execute them.
+        Queued and running records without an active future are otherwise
+        stuck forever after a restart.
         """
         if self.mode != "thread":
             return 0
@@ -185,7 +214,16 @@ class JobManager:
                 job_id,
                 "Queued render was interrupted before a worker could start. Use Retry to create a fresh render job.",
             )
-        return len(orphaned_ids)
+        stuck_running = [
+            job_id for job_id in store.list_running_job_ids()
+            if job_id not in active_ids
+        ]
+        for job_id in stuck_running:
+            store.mark_failed_by_id(
+                job_id,
+                "Running render was interrupted (worker lost after restart). Use Retry to create a fresh render job.",
+            )
+        return len(orphaned_ids) + len(stuck_running)
 
     def retry(self, output_dir: str, runtime_config: Any, job_id: str) -> str | None:
         record = JobStore(output_dir).get_job(job_id)

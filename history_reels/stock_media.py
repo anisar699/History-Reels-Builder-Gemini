@@ -13,13 +13,29 @@ from history_reels.jobs import GenerationJob
 BLOCKED_MEDIA_SOURCES = {"pinterest"}
 
 
+def _safe_error_message(error: BaseException) -> str:
+    """Redact query-string credentials before printing provider failures."""
+    text = str(error)
+    text = re.sub(
+        r"(?i)([?&](?:key|api_?key|token|hmac|signature|expires|apikey)=)[^&\s\"']+",
+        r"\1***",
+        text,
+    )
+    text = re.sub(
+        r"(?i)(authorization\s*[:=]\s*)(\S+)",
+        r"\1***",
+        text,
+    )
+    return text
+
+
 def media_quality_score(width, height, job: GenerationJob, duration=0) -> int:
     """Rank source metadata for a clean crop without accepting tiny clips."""
     try:
         width, height = int(width or 0), int(height or 0)
     except (TypeError, ValueError):
         return -1
-    minimum = int(getattr(job, "MIN_MEDIA_DIMENSION", 480) or 480)
+    minimum = effective_min_media_dimension(job)
     if min(width, height) < minimum:
         return -1
     target_ratio = float(getattr(job, "VIDEO_WIDTH", 720)) / max(float(getattr(job, "VIDEO_HEIGHT", 1280)), 1.0)
@@ -27,7 +43,40 @@ def media_quality_score(width, height, job: GenerationJob, duration=0) -> int:
     orientation_score = max(0, 12 - int(abs(source_ratio - target_ratio) * 12))
     resolution_score = min(12, int(min(width, height) / 180))
     duration_score = min(4, int(float(duration or 0) / 8))
+    profile = str(getattr(job, "MEDIA_QUALITY_PROFILE", "balanced") or "balanced").lower()
+    # High profile requires stronger resolution before ranking bonus.
+    if profile == "high" and min(width, height) < 900:
+        resolution_score = max(0, resolution_score - 3)
     return orientation_score + resolution_score + duration_score
+
+
+def effective_min_media_dimension(job: GenerationJob) -> int:
+    """Resolve the real minimum short-side dimension from profile + job setting."""
+    profile = str(getattr(job, "MEDIA_QUALITY_PROFILE", "balanced") or "balanced").lower()
+    configured = int(getattr(job, "MIN_MEDIA_DIMENSION", 0) or 0)
+    profile_floor = 720 if profile == "high" else 480
+    return max(configured, profile_floor)
+
+
+def accept_downloaded_image(path: str, job: GenerationJob) -> bool:
+    """Reject undersized stills after download so Ken Burns never uses junk assets."""
+    from history_reels.ffmpeg_runner import get_media_dimensions
+
+    width, height = get_media_dimensions(path)
+    minimum = effective_min_media_dimension(job)
+    if width <= 0 or height <= 0 or min(width, height) < minimum:
+        print(
+            f"Rejected image {os.path.basename(path)}: "
+            f"{width}x{height} below quality floor {minimum}px "
+            f"(profile={getattr(job, 'MEDIA_QUALITY_PROFILE', 'balanced')})."
+        )
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+        return False
+    return True
 
 def download_file_with_retry(url, path, max_attempts=2):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
@@ -57,7 +106,7 @@ def download_file_with_retry(url, path, max_attempts=2):
             if os.path.exists(path):
                 try: os.remove(path)
                 except: pass
-            print(f"Download attempt {attempt} failed: {e}")
+            print(f"Download attempt {attempt} failed: {_safe_error_message(e)}")
             if attempt == max_attempts:
                 break
             time.sleep(delay)
@@ -84,7 +133,7 @@ def search_google_images(query):
                 pass
         return list(dict.fromkeys(urls))
     except Exception as e:
-        print(f"Scraping Google/Bing search failed: {e}")
+        print(f"Scraping Google/Bing search failed: {_safe_error_message(e)}")
         return []
 
 def search_pinterest_images(query):
@@ -95,7 +144,7 @@ def search_pinterest_images(query):
         urls = re.findall(r'https://i\.pinimg\.com/[^"\']+\.(?:jpg|png|jpeg)', r.text)
         return list(dict.fromkeys(urls))
     except Exception as e:
-        print(f"Scraping Pinterest failed: {e}")
+        print(f"Scraping Pinterest failed: {_safe_error_message(e)}")
         return []
 
 
@@ -194,7 +243,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                             _report_media_event(job, f"Visual {index}: Storyblocks video downloaded.")
                             return True
             except Exception as e:
-                print(f"Storyblocks query failed: {e}")
+                print(f"Storyblocks query failed: {_safe_error_message(e)}")
 
         elif provider == "pexels":
             print(f"Searching Pexels for '{query}'...")
@@ -228,7 +277,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                             _report_media_event(job, f"Visual {index}: Pexels video downloaded.")
                             return True
             except Exception as e:
-                print(f"Pexels query failed: {e}")
+                print(f"Pexels query failed: {_safe_error_message(e)}")
 
         elif provider == "pixabay":
             print(f"Searching Pixabay for '{query}'...")
@@ -253,7 +302,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                             _report_media_event(job, f"Visual {index}: Pixabay video downloaded.")
                             return True
             except Exception as e:
-                print(f"Pixabay query failed: {e}")
+                print(f"Pixabay query failed: {_safe_error_message(e)}")
 
         elif provider == "google":
             print(f"Searching Google/Bing Images for '{query}'...")
@@ -264,13 +313,13 @@ def download_clip_for_query(query, index, job: GenerationJob):
                         continue
                     ext = ".png" if ".png" in selected_url.lower() else ".jpg"
                     img_save_path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{index}{ext}")
-                    if download_file_with_retry(selected_url, img_save_path):
+                    if download_file_with_retry(selected_url, img_save_path) and accept_downloaded_image(img_save_path, job):
                         getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(selected_url)
                         job.VIDEO_ATTRIBUTIONS.append(f"Google/Bing Image: {selected_url[:80]}...")
                         _report_media_event(job, f"Visual {index}: Google/Bing image downloaded.")
                         return True
             except Exception as e:
-                print(f"Google/Bing Image query failed: {e}")
+                print(f"Google/Bing Image query failed: {_safe_error_message(e)}")
 
         elif provider == "pinterest":
             print(f"Searching Pinterest for '{query}'...")
@@ -281,13 +330,13 @@ def download_clip_for_query(query, index, job: GenerationJob):
                         continue
                     ext = ".png" if ".png" in selected_url.lower() else ".jpg"
                     img_save_path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{index}{ext}")
-                    if download_file_with_retry(selected_url, img_save_path):
+                    if download_file_with_retry(selected_url, img_save_path) and accept_downloaded_image(img_save_path, job):
                         getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(selected_url)
                         job.VIDEO_ATTRIBUTIONS.append(f"Pinterest Image: {selected_url[:80]}...")
                         _report_media_event(job, f"Visual {index}: Pinterest image downloaded.")
                         return True
             except Exception as e:
-                print(f"Pinterest query failed: {e}")
+                print(f"Pinterest query failed: {_safe_error_message(e)}")
 
         elif provider == "wikimedia_image":
             print(f"Searching Wikimedia Commons for '{query}'...")
@@ -305,13 +354,13 @@ def download_clip_for_query(query, index, job: GenerationJob):
                                 continue
                             ext = ".png" if ".png" in img_url.lower() else ".jpg"
                             img_save_path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{index}{ext}")
-                            if download_file_with_retry(img_url, img_save_path):
+                            if download_file_with_retry(img_url, img_save_path) and accept_downloaded_image(img_save_path, job):
                                 getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(img_url)
                                 job.VIDEO_ATTRIBUTIONS.append(f"Wikimedia Commons Image: {page_data.get('title', '')}")
                                 _report_media_event(job, f"Visual {index}: Wikimedia Commons image downloaded.")
                                 return True
             except Exception as e:
-                print(f"Wikimedia Image query failed: {e}")
+                print(f"Wikimedia Image query failed: {_safe_error_message(e)}")
 
         elif provider == "unsplash":
             print(f"Searching Unsplash for '{query}'...")
@@ -329,14 +378,14 @@ def download_clip_for_query(query, index, job: GenerationJob):
                                 continue
                             ext = ".jpg"
                             img_save_path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{index}{ext}")
-                            if download_file_with_retry(img_url, img_save_path):
+                            if download_file_with_retry(img_url, img_save_path) and accept_downloaded_image(img_save_path, job):
                                 getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(img_url)
                                 author = item.get("user", {}).get("name", "Unknown")
                                 job.VIDEO_ATTRIBUTIONS.append(f"Unsplash Image by {author}")
                                 _report_media_event(job, f"Visual {index}: Unsplash image downloaded.")
                                 return True
                 except Exception as e:
-                    print(f"Unsplash query failed: {e}")
+                    print(f"Unsplash query failed: {_safe_error_message(e)}")
             else:
                 print("Skipping Unsplash: API key not set in .env")
                 
@@ -355,13 +404,13 @@ def download_clip_for_query(query, index, job: GenerationJob):
                                 continue
                             ext = ".jpg"
                             img_save_path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{index}{ext}")
-                            if download_file_with_retry(img_url, img_save_path):
+                            if download_file_with_retry(img_url, img_save_path) and accept_downloaded_image(img_save_path, job):
                                 getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(img_url)
                                 job.VIDEO_ATTRIBUTIONS.append(f"NASA Image")
                                 _report_media_event(job, f"Visual {index}: NASA image downloaded.")
                                 return True
             except Exception as e:
-                print(f"NASA Image query failed: {e}")
+                print(f"NASA Image query failed: {_safe_error_message(e)}")
                 
         elif provider == "archive":
             print(f"Searching Internet Archive for '{query}'...")
@@ -392,7 +441,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                                 _report_media_event(job, f"Visual {index}: Internet Archive video downloaded.")
                                 return True
             except Exception as e:
-                print(f"Internet Archive query failed: {e}")
+                print(f"Internet Archive query failed: {_safe_error_message(e)}")
 
     # Ultimate fallback
     if query != "cinematic":

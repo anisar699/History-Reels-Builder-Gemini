@@ -119,10 +119,13 @@ class ScriptConfig(BaseModel):
             raise ValueError("At least one narration is required.")
         if len(self.captions) != len(self.narrations):
             raise ValueError("Captions and narrations must contain the same number of slides.")
-        while len(self.queries) < len(self.captions):
+        # Keep at least 8 media queries for the render loop, and never fewer
+        # queries than slides. Extra queries are useful when clips are reused.
+        target_queries = max(8, len(self.captions))
+        while len(self.queries) < target_queries:
             self.queries.append("cinematic")
-        if len(self.queries) > len(self.captions):
-            self.queries = self.queries[:len(self.captions)]
+        if len(self.queries) > target_queries:
+            self.queries = self.queries[:target_queries]
         return self
 
 
@@ -240,15 +243,17 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
             }
         }
         
+        response = None
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=30)
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Network error: {e}")
+            error_response = getattr(e, "response", None) or response
+            raise build_api_request_error("Gemini", error_response, e) from e
         try:
             result = response.json()
         except Exception as e:
-            raise RuntimeError(f"Failed to decode JSON: {e}")
+            raise RuntimeError(f"Failed to decode JSON from Gemini: {type(e).__name__}.") from e
         
         try:
             raw_text = result["candidates"][0]["content"]["parts"][0]["text"]
@@ -256,7 +261,9 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
             validated = ScriptConfig(**parsed)
             return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
         except Exception as e:
-            raise ValueError(f"Failed to parse or validate Gemini API response: {e}. Raw response: {result}")
+            raise ValueError(
+                f"Failed to parse or validate Gemini API response: {type(e).__name__}: {e}"
+            ) from e
             
     elif provider == "openai":
         print(f"Calling OpenAI GPT-4o-mini to auto-generate script...")
@@ -317,19 +324,21 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
             ]
         }
         
+        response = None
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=30)
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Network error: {e}")
+            error_response = getattr(e, "response", None) or response
+            raise build_api_request_error("Groq", error_response, e) from e
         try:
             result = response.json()
         except Exception as e:
-            raise RuntimeError(f"Failed to decode JSON: {e}")
+            raise RuntimeError(f"Failed to decode JSON from Groq: {type(e).__name__}.") from e
         try:
             content = result["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:
-            raise RuntimeError(f"Unexpected API response from {provider}: {e}")
+            raise RuntimeError(f"Unexpected API response from Groq: {type(e).__name__}.") from e
         parsed = parse_json_response(content)
         validated = ScriptConfig(**parsed)
         return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
@@ -347,19 +356,21 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
             ],
             "stream": False
         }
+        response = None
         try:
             response = requests.post(url, json=payload, timeout=300)
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Network error: {e}")
+            error_response = getattr(e, "response", None) or response
+            raise build_api_request_error("Ollama", error_response, e) from e
         try:
             result = response.json()
         except Exception as e:
-            raise RuntimeError(f"Failed to decode JSON: {e}")
+            raise RuntimeError(f"Failed to decode JSON from Ollama: {type(e).__name__}.") from e
         try:
             content = result["message"]["content"]
         except (KeyError, TypeError) as e:
-            raise RuntimeError(f"Unexpected API response from Ollama: {e}. Raw: {result}")
+            raise RuntimeError(f"Unexpected API response from Ollama: {type(e).__name__}.") from e
         parsed = parse_json_response(content)
         validated = ScriptConfig(**parsed)
         return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
@@ -393,6 +404,7 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
                     {"role": "user", "content": user_prompt}
                 ]
             }
+            response = None
             try:
                 response = requests.post(url, headers=headers, json=payload, timeout=30)
                 response.raise_for_status()
@@ -402,10 +414,11 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
                 validated = ScriptConfig(**parsed)
                 return validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
             except requests.exceptions.RequestException as e:
-                print(f"    [X] Model {model} failed (Network/API Error): {e}")
-                last_error = e
+                safe_error = build_api_request_error("OpenRouter", getattr(e, "response", None) or response, e)
+                print(f"    [X] Model {model} failed (Network/API Error): {safe_error}")
+                last_error = safe_error
             except Exception as e:
-                print(f"    [X] Model {model} failed (Processing Error): {e}")
+                print(f"    [X] Model {model} failed (Processing Error): {type(e).__name__}")
                 last_error = e
                 
         raise RuntimeError(f"All OpenRouter auto-fallback models failed. Last error: {last_error}")

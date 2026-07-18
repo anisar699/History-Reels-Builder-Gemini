@@ -19,6 +19,8 @@ def format_ass_time(seconds):
 
 def markdown_to_ass(text):
     text = str(text).replace("\\", "\\\\")
+    # Escape ASS override braces so user text cannot inject style codes.
+    text = text.replace("{", "\\{").replace("}", "\\}")
     # Convert newlines
     text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\N")
     # Convert markdown **text** to ASS bold and golden-yellow color overrides

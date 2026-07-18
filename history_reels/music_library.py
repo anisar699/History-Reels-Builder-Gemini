@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import random
-import subprocess
 from typing import Any
 
 
@@ -69,9 +68,12 @@ def ensure_local_music_track(job: Any) -> str | None:
 
     print(f"Creating local royalty-free '{vibe}' background track (one-time setup)...")
     try:
-        subprocess.run(
-            local_track_command(vibe, target, track_index), check=True, stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        from history_reels.ffmpeg_runner import run_command
+
+        run_command(
+            local_track_command(vibe, target, track_index),
+            timeout=120,
+            label="local music generate",
         )
     except Exception as error:
         print(f"Failed to create local background track: {error}")
