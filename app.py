@@ -94,7 +94,18 @@ def render_live_generation_status(output_dir: str) -> None:
                 events = job_store.list_events(record["job_id"], limit=1)
                 message = events[0]["message"] if events else "Waiting for the next pipeline step."
                 st.markdown(f"**{record.get('topic', 'Untitled reel')}** · {_status_badge(record.get('status'))}")
-                st.progress(progress, text=f"{_workflow_label(stage)} — {progress}% · {message}")
+                col_prog, col_btn = st.columns([5, 1])
+                with col_prog:
+                    st.progress(progress, text=f"{_workflow_label(stage)} — {progress}% · {message}")
+                with col_btn:
+                    if st.button("Stop", key=f"cancel_{record['job_id']}"):
+                        from history_reels import job_manager
+                        try:
+                            job_manager.cancel_job(record['job_id'])
+                        except AttributeError:
+                            manager = get_job_manager(config.JOB_WORKER_MODE)
+                            manager.cancel(config.OUTPUT_DIR, record['job_id'])
+                        st.rerun()
 
                 current_index = next((index for index, (name, _) in enumerate(WORKFLOW_STAGES) if name == stage), 0)
                 workflow = []
@@ -998,6 +1009,25 @@ with st.sidebar:
                     st.rerun()
                 st.info("No new key was entered; existing configuration was kept unchanged.")
 
+# Top Metrics Dashboard
+try:
+    from history_reels.job_store import get_dashboard_metrics
+    metrics_data = get_dashboard_metrics(config.OUTPUT_DIR)
+    total_vids = metrics_data.get("total_videos", 0)
+    storage_str = metrics_data.get("storage_used", "0 B")
+except ImportError:
+    total_vids = "—"
+    storage_str = "—"
+
+active_model_name = getattr(config, "OLLAMA_MODEL", "auto") if provider == "ollama" else provider.capitalize()
+
+st.markdown("<br>", unsafe_allow_html=True)
+m1, m2, m3 = st.columns(3)
+m1.metric("Total Videos", total_vids)
+m2.metric("Storage Used", storage_str)
+m3.metric("Active AI Model", active_model_name)
+st.markdown("<br>", unsafe_allow_html=True)
+
 tabs = st.tabs(["🚀 Create Reel", "🎞️ My Videos", "ℹ️ Tool Help/Guide"])
 
 # Tab 1: Video Generator
@@ -1142,6 +1172,16 @@ with tabs[0]:
         st.markdown("<div class='widget-title'>🎬 STEP 2: GENERATE VIDEO</div>", unsafe_allow_html=True)
         st.caption("Your sidebar settings will be saved with this render.")
         
+        st.markdown(
+            f"<div style='margin-bottom:1rem; padding:0.8rem; background:rgba(255,215,0,0.05); border-radius:8px; border:1px solid rgba(255,215,0,0.2);'>"
+            f"<b>Active Profile</b><br>"
+            f"🧠 AI: <code>{provider}</code><br>"
+            f"🗣️ Voice: <code>{config.VOICE_PROVIDER}</code><br>"
+            f"🎬 Media: <code>{config.MEDIA_PREFERENCE}</code>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+        
         start_btn = st.button("✨ Generate Video", key="generate_reel", width="stretch")
         st.warning("⚠️ Warning: Generating multiple reels at the same time is not officially supported and may lead to mixed results. Please wait for the current generation to finish.")
 
@@ -1278,6 +1318,15 @@ with tabs[0]:
     if not completed_current_records:
         completed_current_records = completed_deliverable_records(current_records[:1])
     if completed_current_records:
+        if "notified_jobs" not in st.session_state:
+            st.session_state["notified_jobs"] = set()
+        
+        new_jobs = [r for r in completed_current_records if r["job_id"] not in st.session_state["notified_jobs"]]
+        if new_jobs:
+            st.balloons()
+            for r in new_jobs:
+                st.session_state["notified_jobs"].add(r["job_id"])
+                
         render_completed_deliverables(
             completed_current_records,
             key_prefix="create_complete",
@@ -1374,52 +1423,46 @@ with tabs[1]:
         st.info("No completed videos yet. Create a reel, follow its render status, then return here to preview and download the final MP4 plus SEO package.")
     else:
         st.markdown("#### Earlier exported videos")
-        st.caption(f"{len(mp4_files)} older reel(s). Select one to preview and export without loading the entire library at once.")
-        selected_video = st.selectbox(
-            "Choose a reel to preview",
-            options=mp4_files,
-            format_func=lambda path: os.path.basename(path).rsplit(".", 1)[0],
-        )
-        file_basename = os.path.basename(selected_video)
-        file_title = file_basename.rsplit(".", 1)[0]
-        txt_path = os.path.join(config.OUTPUT_DIR, f"{file_title}.txt")
-        modified = datetime.fromtimestamp(os.path.getmtime(selected_video)).strftime("%d %b %Y · %I:%M %p")
-        with st.container(border=True):
-            st.markdown(f"<div class='gallery-card-title'>🎬 {file_title}</div>", unsafe_allow_html=True)
-            try:
-                file_size = os.path.getsize(selected_video)
-            except FileNotFoundError:
-                file_size = 0
-            st.markdown(
-                f"<div class='gallery-meta'>Exported {modified} · {_format_file_size(file_size)} · Vertical reel deliverable</div>",
-                unsafe_allow_html=True,
-            )
-            col_g_vid, col_g_txt = st.columns([1.15, 0.85])
-            with col_g_vid:
-                st.video(selected_video)
-                st.download_button(
-                    "⬇️ Download MP4",
-                    data=open(selected_video, "rb"),
-                    file_name=file_basename,
-                    mime="video/mp4",
-                    key=f"download_video_{file_title}",
-                    width="stretch",
-                )
-            with col_g_txt:
-                if os.path.exists(txt_path):
-                    with open(txt_path, "r", encoding="utf-8") as seo_file:
-                        seo_content = seo_file.read()
-                    st.text_area("SEO package", value=seo_content, height=260, key=f"txt_{file_title}")
+        st.caption(f"{len(mp4_files)} older reel(s) available in your library.")
+        
+        grid_cols = st.columns(3)
+        for idx, video_path in enumerate(mp4_files):
+            col = grid_cols[idx % 3]
+            with col:
+                file_basename = os.path.basename(video_path)
+                file_title = file_basename.rsplit(".", 1)[0]
+                txt_path = os.path.join(config.OUTPUT_DIR, f"{file_title}.txt")
+                modified = datetime.fromtimestamp(os.path.getmtime(video_path)).strftime("%d %b %Y")
+                try:
+                    file_size = os.path.getsize(video_path)
+                except FileNotFoundError:
+                    file_size = 0
+                
+                with st.container(border=True):
+                    st.markdown(f"<div class='gallery-card-title' style='font-size:1rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;' title='{file_title}'>🎬 {file_title}</div>", unsafe_allow_html=True)
+                    st.caption(f"{modified} · {_format_file_size(file_size)}")
+                    st.video(video_path)
+                    
                     st.download_button(
-                        "⬇️ Download SEO package",
-                        data=seo_content,
-                        file_name=os.path.basename(txt_path),
-                        mime="text/plain",
-                        key=f"download_seo_{file_title}",
-                        width="stretch",
+                        "⬇️ MP4",
+                        data=open(video_path, "rb"),
+                        file_name=file_basename,
+                        mime="video/mp4",
+                        key=f"grid_dl_vid_{idx}_{file_basename}",
+                        use_container_width=True,
                     )
-                else:
-                    st.info("The MP4 is ready. No SEO package was found for this older export.")
+                    
+                    if os.path.exists(txt_path):
+                        with open(txt_path, "r", encoding="utf-8") as seo_file:
+                            seo_content = seo_file.read()
+                        st.download_button(
+                            "⬇️ SEO",
+                            data=seo_content,
+                            file_name=os.path.basename(txt_path),
+                            mime="text/plain",
+                            key=f"grid_dl_seo_{idx}_{file_basename}",
+                            use_container_width=True,
+                        )
 
 # Tab 3: Tool Help/Guide
 with tabs[2]:

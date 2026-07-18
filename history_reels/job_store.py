@@ -286,6 +286,9 @@ class JobStore:
             return cursor.rowcount == 1
 
     def cancellation_requested(self, job_id: str) -> bool:
+        record = self.get_job(job_id)
+        if record and record.get("status") == "cancelled":
+            return True
         with self._connection() as connection:
             row = connection.execute(
                 "SELECT cancel_requested FROM jobs WHERE job_id = ?", (job_id,)
@@ -366,3 +369,34 @@ class JobStore:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+
+def get_dashboard_metrics(output_dir: str) -> dict[str, Any]:
+    """Calculate dashboard metrics for total completed videos and storage used."""
+    total_completed = 0
+    total_storage_bytes = 0
+
+    if os.path.exists(output_dir):
+        store = JobStore(output_dir)
+        try:
+            with store._connection() as connection:
+                row = connection.execute(
+                    "SELECT COUNT(*) as count FROM jobs WHERE status IN ('completed', 'succeeded')"
+                ).fetchone()
+                if row:
+                    total_completed = row["count"]
+        except Exception:
+            pass
+
+        for root, _, files in os.walk(output_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                if not os.path.islink(file_path):
+                    total_storage_bytes += os.path.getsize(file_path)
+
+    return {
+        "total_completed_videos": total_completed,
+        "total_storage_bytes": total_storage_bytes,
+        "total_storage_mb": round(total_storage_bytes / (1024 * 1024), 2) if total_storage_bytes else 0.0
+    }
+

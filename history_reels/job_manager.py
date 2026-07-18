@@ -50,7 +50,7 @@ class JobManager:
             "is_raw_script": bool(is_raw_script),
             "retry_of": getattr(job, "RETRY_OF", ""),
             "attempt": attempt,
-            "max_attempts": max_attempts or int(getattr(job, "MAX_JOB_ATTEMPTS", 2)),
+            "max_attempts": max_attempts or int(getattr(job, "MAX_JOB_ATTEMPTS") or 2),
         }
         store = JobStore(job.OUTPUT_DIR)
         job.history_store = store
@@ -75,6 +75,11 @@ class JobManager:
             self._processes[job_id] = process
 
     def _execute(self, job: GenerationJob, request: dict[str, Any]) -> bool:
+        if job.history_store:
+            record = job.history_store.get_job(job.job_id)
+            if record and record.get("status") == "cancelled":
+                return False
+
         try:
             result = self._runner(
                 topic=request.get("topic"),
@@ -130,12 +135,13 @@ class JobManager:
     def cancel(self, output_dir: str, job_id: str) -> bool:
         store = JobStore(output_dir)
         requested = store.request_cancellation(job_id)
+        if requested:
+            placeholder = type("QueuedJob", (), {"job_id": job_id})()
+            store.mark_cancelled(placeholder, "Cancellation requested")
         with self._lock:
             future = self._futures.get(job_id)
-        if future and future.cancel():
-            # It had not started; no pipeline checkpoint will run to finalize it.
-            placeholder = type("QueuedJob", (), {"job_id": job_id})()
-            store.mark_cancelled(placeholder, "Cancelled before worker start.")
+        if future:
+            future.cancel()
         return requested
 
     def recover_queued(self, output_dir: str) -> int:
