@@ -1,150 +1,228 @@
-# Universal Content Engine — Premium AI Shorts Auto-Pilot Dashboard 🎥✨
+# History Reels Builder
 
-An advanced, feature-rich auto-pilot compilation pipeline designed for generating premium vertical short-form videos (9:16 reels/TikToks/Shorts) for any niche. This system integrates multilingual voiceover narration (via Edge-TTS & ElevenLabs), language-aware subtitles, dynamic background music mixing, and media search/scrapers to build ready-to-publish reels.
+[![Quality checks](https://github.com/anisar699/History-Reels-Builder-Gemini/actions/workflows/quality.yml/badge.svg)](https://github.com/anisar699/History-Reels-Builder-Gemini/actions/workflows/quality.yml)
 
-Now upgraded to a **Fully Dynamic System** supporting videos up to 10 minutes long, with a beautiful organized Streamlit visual control dashboard and 7+ flexible script structuring methods to prevent API quota bottlenecks.
+A local-first Streamlit dashboard and CLI for turning a topic, article, spreadsheet,
+or manual script into a narrated short-form video. The pipeline combines AI-assisted
+script generation, multilingual voiceover, relevant stock media, narration-synced
+visual timing, captions, music, branding, FFmpeg rendering, and post-render QA.
 
----
+The default output is a vertical `720x1280` MP4 suitable for Reels, TikTok, and
+YouTube Shorts. Landscape and square presets are also available.
 
-## 🌟 What's New in V2.0 (The Universal Update)
+## Highlights
 
-* **Ultimate Auto Fallback AI Engine:** Never hit an API limit again! Select the "Auto Fallback" provider to seamlessly try Google Gemini -> OpenAI -> Local Ollama -> OpenRouter -> Groq sequentially. If one fails, the next takes over instantly.
-* **Media Sources UI:** Select standard stock platforms in the Visuals panel; specialized providers live under Advanced media sources.
-* **Dynamic Scripts & Pacing:** No more 4-slide limits. The target duration guides script length, while the final render follows the natural narration duration instead of adding a silent tail.
-* **Focused Creative Controls:** Set content language and tone while the entered topic supplies the subject and visual context.
-* **Language-Aware Captions:** Urdu, English, Hindi, Arabic, and Roman Urdu each use an appropriate caption font. You can also upload a `.ttf` or `.otf` font; the render pipeline preserves and burns that exact uploaded font.
-* **Local-First Music + Media Quality:** Every music vibe uses a reusable, layered 11-minute FFmpeg-generated score instead of a fragile download URL. Resolution, subject-anchor relevance, safe metadata, creator variety, blank-frame checks, and perceptual duplicate detection rank or reject source media before rendering.
-* **Reliable Render Queue:** Every job has a durable local status, stage, event log, retry action, and cancellation checkpoints. Interrupted queued jobs become clearly retryable instead of remaining stuck forever.
-* **Verified Deliverables:** A no-network matrix covers Urdu, English, Hindi, Arabic, Roman Urdu, vertical/landscape/square layouts, music modes, and media-quality profiles. Every completed render is checked with FFprobe plus full-timeline and slide-aware visual QA before it is marked ready.
-* **Categorized UI Dashboard:** Generator settings are organized into expandable sections for AI models, audio and voice, visuals, branding, and API keys.
-* **Reliable Visual Treatment:** Uses a fixed crossfade transition with an optional documentary contrast treatment.
-* **Fixed Audio Quality:** Smart music ducking and voice EQ/compression are applied automatically to every render.
-* **Branding Options:** Burn translucent Custom Brand Logos/Watermarks, attach Intro/Outro Bumper clips automatically, and display an animated Progress Bar.
-* **Custom Export Directory:** Choose exactly where your final MP4s and SEO text files are saved on your PC right from the UI (using a native file browser).
-* **Rock-Solid Stability (Multi-Agent Patched):** Massive architecture improvements ensuring flawless partial-download handling, graceful JSON fallbacks, precise FFmpeg text escaping, and bulletproof rendering reliability.
-* **Approved Media Sources:** Uses the selected Pexels, Pixabay, Google/Bing image, and Wikimedia image providers. Low-quality candidates are rejected before download, and the renderer reuses valid assets rather than creating blank frames when a subset of media requests fails.
-* **Narration-Synced Visuals:** Each narration slide owns its visual slot and duration. Crossfade overlap is compensated automatically, so the image sequence does not drift away from the spoken script.
+- **Multilingual content:** Urdu, English, Hindi, Arabic, and Roman Urdu.
+- **Urdu/Arabic subtitle rendering:** language-aware fonts and shaped raster
+  overlays are used where normal subtitle rendering is unreliable.
+- **AI provider fallback:** Gemini → OpenAI → local Ollama → OpenRouter → Groq.
+- **Seven input modes:** single topic, topic batch, RSS/article, CSV/Excel,
+  pasted narrative, fully manual slides, and a built-in fallback demo.
+- **Relevant media selection:** candidates are ranked using subject anchors,
+  technical quality, orientation, provider diversity, and creator diversity.
+- **Narration-synced visuals:** each narration slide receives its own duration,
+  with crossfade overlap compensated automatically.
+- **Subject-aware crop:** a local saliency estimate keeps the most informative
+  region visible in vertical, landscape, and square exports.
+- **Visual QA:** blank, near-duplicate, low-detail, and badly distributed frames
+  can be rejected before a render is accepted.
+- **Stable audio:** local soundtrack presets, automatic voice mastering, and
+  music ducking are applied without extra dashboard switches.
+- **Reliable jobs:** isolated workspaces, persisted status/events, cancellation
+  checkpoints, retry support, and verified deliverables.
+- **One-click Windows installer:** prepares Python, FFmpeg, an isolated virtual
+  environment, and Desktop/Start Menu shortcuts.
 
----
+## How the pipeline works
 
-## Key Features 🚀
+1. A topic, article, spreadsheet row, or manual script is converted into
+   slide-aligned captions, narration, and media queries.
+2. Edge-TTS or ElevenLabs creates the voice track.
+3. Enabled media providers return candidate videos and images.
+4. Relevance and quality scoring select varied, usable assets for each slide.
+5. Narration timing controls the visual cuts and subject-aware crops.
+6. FFmpeg renders a fixed crossfade, captions, music, logo/progress overlays,
+   and optional intro/outro bumpers.
+7. FFprobe and visual sampling validate the final MP4 before it is exposed as a
+   completed deliverable.
 
-### 1. 🖥️ Interactive Streamlit Dashboard
-* **Visual Progress Console:** Watch stock media search, voice rendering, and FFmpeg video merging logs live on screen.
-* **Completion Cards:** When a render finishes, the Create Reel page immediately shows the MP4 preview, download button, full SEO package, and SEO download. The same verified deliverable appears separately in **My Videos**.
-* **Secure API Key Status:** See which providers are configured without displaying secret values. Persistent keys stay in `.env` or a managed hosting secret store.
-* **Output Gallery:** Browse recent completed renders without misleading progress bars, then access older exports separately. Each video includes its corresponding SEO text package (optimized description, tags, and hashtags).
+The selected duration is a script and pacing target. The final video follows the
+natural narration duration instead of adding a silent tail. Presets range from
+10 seconds to 10 minutes; longer videos require more source media and render time.
 
-### 2. 📝 7 Flexible Generation Methods
-* **Single Video Mode:** Provide a topic from any niche, and the system does everything.
-* **Batch Videos Mode:** Input comma-separated topics list to generate multiple reels sequentially.
-* **Automated News Scraping:** Scrape XML RSS feeds (e.g. BBC Urdu, Dawn) or direct web article links. The system cleans HTML paragraphs and structures the video from live content.
-* **CSV/Excel Batch Upload:** Upload validated spreadsheets (`.csv` or `.xlsx`) to bulk-compile up to 1,000 rows per dashboard batch.
-* **Manual AI Script (Paste & Struct):** Paste a raw narrative story paragraph, and the AI automatically splits it into dynamically timed slides.
-* **Manual Script Input (100% Free):** Directly write subtitles, voiceover lines, music vibe, and search queries manually via multi-line text areas. Bypasses LLMs entirely!
-* **Fallback Mode:** Triggers a built-in pre-written hardcoded script if APIs completely fail.
+## Current dashboard controls
 
-### 3. 🎥 Smart Media Priority & Ken Burns Zoompan
-* Select preference: **Mixed (Videos + Images)**, **Videos Only**, or **Images Only**.
-* Images and videos use a local saliency estimate to keep the most detailed subject region inside vertical, square, or landscape crops.
-* If **Images Only** or fallback images are used, the engine applies a cinematic Ken Burns crop-scale-and-pan filter graph to create motion from static topical images.
+| Area | Available choices |
+| --- | --- |
+| AI | Auto fallback, Gemini, OpenAI, Groq, Ollama, OpenRouter |
+| Language | Urdu, English, Hindi, Arabic, Roman Urdu |
+| Voice | Free Edge-TTS or optional ElevenLabs |
+| Format | Vertical 9:16, landscape 16:9, square 1:1 |
+| Media | Mixed, videos only, images only |
+| Media quality | Balanced or stricter high-quality filtering |
+| Pacing | Approximately 3, 5, or 7 seconds per cut |
+| Music | Mystery, epic, sad, ancient, modern, intense |
+| Color | None or documentary high contrast |
+| Branding | Caption font/size, PNG logo, intro/outro, fixed progress bar |
 
----
+Normal media sources are Pexels, Pixabay, Google/Bing Images, Wikimedia Commons,
+and Unsplash. Storyblocks, NASA Images, and Internet Archive are kept under
+**Advanced media sources** for specialized use.
 
-## Setup & Installation 🛠️ (1-Click Auto Installer)
+## Windows one-click installation
 
-### Recommended: shareable Windows setup
+Download and run:
 
-Send your friend only:
+**[ReelsBuilderSetup.exe](dist/ReelsBuilderSetup.exe)**
+
+The setup installs the application for the current Windows user under:
 
 ```text
-dist\ReelsBuilderSetup.exe
+%LOCALAPPDATA%\Programs\History Reels Builder
 ```
 
-They double-click the setup file. It installs the project per-user, finds or installs
-Python 3.11–3.14 and FFmpeg, creates an isolated `.venv`, installs pinned packages,
-creates Desktop and Start Menu shortcuts, prepares output folders, and launches the
-dashboard. Internet is required during the first installation. Personal `.env` files,
-API keys, generated videos, job databases, and developer files are not bundled.
+It then:
 
-The first dashboard opens with blank API-key fields; each user enters and saves their
-own keys. Because the local setup executable is not code-signed, Windows SmartScreen
-may require **More info → Run anyway**.
+- finds or installs Python 3.11–3.14 and FFmpeg;
+- creates an isolated `.venv`;
+- installs the pinned packages in `requirements.txt`;
+- creates Desktop and Start Menu shortcuts;
+- prepares output and runtime folders; and
+- opens the dashboard in the default browser.
 
-To rebuild the setup executable from source:
+Internet access is required during the first installation. The setup contains a
+blank `.env.example`; personal API keys, generated videos, job databases, and
+development files are not bundled. Existing `.env` values are preserved when the
+installer is run again as an update.
 
-```powershell
-.\installer\build_installer.ps1
-```
+The executable is currently unsigned. If Windows SmartScreen appears, inspect the
+publisher/file details and use **More info → Run anyway** only when the file came
+from this repository. Its matching checksum is available at
+[`dist/ReelsBuilderSetup.exe.sha256`](dist/ReelsBuilderSetup.exe.sha256).
 
-For full installer details, see [docs/INSTALLER.md](docs/INSTALLER.md).
+Full installer and rebuild instructions are in
+[`docs/INSTALLER.md`](docs/INSTALLER.md).
 
-### Source checkout installation
+## Source installation
 
-The legacy source installer remains available for development checkouts.
+### Requirements
 
-### Step 1: Download Python & Git
-1. **Download Python:** Go to [python.org](https://www.python.org/downloads/) and install it. 
-   ⚠️ **CRITICAL:** Check the box **"Add Python to PATH"** at the bottom before clicking Install!
-2. **Download Git:** Go to [git-scm.com](https://git-scm.com/downloads) and install Git for Windows (just keep clicking Next).
+- Windows with Python 3.11–3.14
+- FFmpeg and FFprobe available on `PATH`
+- Git
+- Internet access for online AI, Edge-TTS, and stock-media providers
 
-### Step 2: Download the Project
-Open a normal **PowerShell** window and type:
+Clone the repository and create an isolated environment:
+
 ```powershell
 git clone https://github.com/anisar699/History-Reels-Builder-Gemini.git
 cd History-Reels-Builder-Gemini
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-### Step 3: Run the Source Auto-Installer 🚀
-While inside the `History-Reels-Builder-Gemini` folder, simply type:
+Start the dashboard:
+
 ```powershell
-python install.py
-```
-**That's it! The script will automatically:**
-* Check and install FFmpeg (Video Engine) for you.
-* Download and install all required AI Python libraries.
-* Create the configured output, background-music, and font asset folders.
-* Create a **"Start Reels Builder"** shortcut right on your Desktop!
-* Launch the Dashboard automatically in your web browser!
-
----
-
-## Running the Dashboard 💻
-
-Double-click the **Gemini Reels Dashboard.lnk** shortcut on your desktop, or run the following command in the project directory:
-```powershell
-streamlit run app.py
+python -m streamlit run app.py
 ```
 
-### Command Line Interface (CLI)
-You can also trigger batch jobs directly via the terminal:
-```powershell
-# Generate via Gemini
-python build_reel.py --topic "5 productivity tips for students" --provider gemini
+The old `install.py` flow installs into the current system Python and is retained
+only for compatibility. New installations should use the Windows setup or the
+isolated source steps above.
 
-# Generate offline via local Ollama
+## API keys and local mode
+
+API keys can be entered in the dashboard's **API Key Status** section. On a local
+desktop installation, saved values are written only to that installation's
+ignored `.env` file and applied immediately.
+
+At least one script provider is needed for AI-generated scripts:
+
+- `GEMINI_API_KEY`
+- `OPENAI_API_KEY`
+- `GROQ_API_KEY`
+- `OPENROUTER_API_KEY`
+- or a locally running Ollama model such as `qwen2.5:7b`
+
+Media-provider keys improve stock coverage:
+
+- `PEXELS_API_KEY`
+- `PIXABAY_API_KEY`
+- `UNSPLASH_API_KEY`
+- `GOOGLE_SEARCH_API_KEY` and `GOOGLE_SEARCH_CX`
+- optional `STORYBLOCKS_PUBLIC_KEY` and `STORYBLOCKS_PRIVATE_KEY`
+
+`ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` are optional. Edge-TTS remains the
+default voice provider. Fully manual script input avoids LLM API usage, but online
+voice or media providers may still require internet access.
+
+Never commit `.env`, `.streamlit/secrets.toml`, API keys, or generated user data.
+
+## Command-line usage
+
+Run commands from an activated project environment:
+
+```powershell
+# Generate one video with the best configured provider
+python build_reel.py --topic "5 productivity tips for students" --provider auto
+
+# Generate a script through local Ollama
 python build_reel.py --topic "Beginner home workout" --provider ollama
 
-# Generate from Web Scraper
+# Build from an RSS feed or article
 python build_reel.py --news-url "https://feeds.bbci.co.uk/urdu/rss.xml" --provider groq
 
-# Generate from CSV file
+# Build from CSV or Excel rows
 python build_reel.py --csv "batch_scripts.csv" --provider openrouter
+
+# Keep an isolated job workspace for debugging
+python build_reel.py --topic "The printing press" --keep-workspace
 ```
 
-### Local verification
+Supported providers are `auto`, `gemini`, `openai`, `groq`, `ollama`, and
+`openrouter`.
 
-Run the full local regression suite before publishing changes:
+## Testing
+
+Run the same regression command used by GitHub Actions:
 
 ```powershell
 python -B -m unittest discover -s tests -v
 ```
 
-The test suite covers queue dispatch and retry behavior, safe input handling, captions/fonts, local music, media fallbacks, post-render verification, and completed-deliverable paths.
+CI runs the suite on Python 3.11 and 3.12. Tests cover job isolation/retry,
+security-sensitive input handling, multilingual captions/fonts, fixed audio and
+transition behavior, media relevance/quality, narration timing, subject-aware
+crop, visual QA, and deliverable verification.
 
----
+## Project layout
 
-## ℹ️ Configuration & API Help
-Open the **Tool Help/Guide** tab inside the running Streamlit dashboard for a detailed Hinglish/Roman Urdu walkthrough on how to generate free API keys for Pexels, Pixabay, Gemini, Groq, OpenRouter, and setting up local offline **Ollama** models.
+```text
+app.py                         Streamlit dashboard
+build_reel.py                  CLI entry point
+history_reels/                 Pipeline package
+tests/                         Regression suite
+installer/                     Runtime bootstrap, launcher, and Inno Setup source
+dist/ReelsBuilderSetup.exe     Shareable Windows installer
+docs/                          Environment, QA, verification, and installer guides
+```
 
-For deployment and environment details, see [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md), [docs/QUALITY_CHECKS.md](docs/QUALITY_CHECKS.md), and [docs/VERIFICATION.md](docs/VERIFICATION.md).
+Generated videos are stored by default under:
+
+```text
+%USERPROFILE%\Pictures\history videos
+```
+
+Installer and dashboard logs are stored inside the installed application's
+`runtime\logs` directory.
+
+## Additional documentation
+
+- [Environment and deployment](docs/ENVIRONMENT.md)
+- [Quality checks](docs/QUALITY_CHECKS.md)
+- [Verification matrix](docs/VERIFICATION.md)
+- [Windows installer](docs/INSTALLER.md)
