@@ -37,8 +37,7 @@ QUICK CAPTION (copy-paste short version)
 --------------------------------------------------------------------------------
 MEDIA + MUSIC NOTES
 --------------------------------------------------------------------------------
-Creative brief: {getattr(job, 'CONTENT_NICHE', 'General')} · {getattr(job, 'CONTENT_LANGUAGE', 'Urdu')} · {getattr(job, 'CONTENT_TONE', 'Engaging & Clear')}
-Target platform: {getattr(job, 'TARGET_PLATFORM', 'Instagram Reels')} · Visual style: {getattr(job, 'VISUAL_STYLE', 'Cinematic')}
+Creative brief: {getattr(job, 'CONTENT_LANGUAGE', 'Urdu')} · {getattr(job, 'CONTENT_TONE', 'Engaging & Clear')}
 Media: {num_clips} dynamic visual clips from the configured media sources.
 Media quality profile: {getattr(job, 'MEDIA_QUALITY_PROFILE', 'balanced')} (minimum source dimension: {getattr(job, 'MIN_MEDIA_DIMENSION', 480)}px).
 Music: {music_note}

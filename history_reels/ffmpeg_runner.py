@@ -211,16 +211,20 @@ def write_fontconfig_file(job: Any) -> str:
         os.path.dirname(os.path.abspath(getattr(job, "FONT_PATH", "") or "")),
         os.path.join(getattr(job, "OUTPUT_DIR", ""), "fonts"),
         getattr(job, "ASSETS_DIR", "") or "",
+        "/usr/share/fonts",
+        "/usr/local/share/fonts",
     }
     font_dir_lines = "\n".join(
         f"    <dir>{directory.replace(chr(92), '/')}</dir>"
         for directory in sorted(font_dirs)
-        if directory
+        if directory and os.path.exists(directory)
     )
     fonts_conf_content = f"""<?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
 <fontconfig>
 {font_dir_lines}
+    <dir>WINDOWSFONTDIR</dir>
+    <include ignore_missing="yes">/etc/fonts/fonts.conf</include>
 </fontconfig>
 """
     fonts_conf_path = os.path.join(job.TOPIC_TEMP_DIR, "fonts.conf")

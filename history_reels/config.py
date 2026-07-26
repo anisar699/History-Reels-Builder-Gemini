@@ -22,6 +22,9 @@ def _env_flag(name, default=False):
 # API Keys
 PEXELS_API_KEY = _sanitize_key(os.environ.get("PEXELS_API_KEY"))
 PIXABAY_API_KEY = _sanitize_key(os.environ.get("PIXABAY_API_KEY"))
+UNSPLASH_API_KEY = _sanitize_key(os.environ.get("UNSPLASH_API_KEY"))
+GOOGLE_SEARCH_API_KEY = _sanitize_key(os.environ.get("GOOGLE_SEARCH_API_KEY"))
+GOOGLE_SEARCH_CX = _sanitize_key(os.environ.get("GOOGLE_SEARCH_CX"))
 OPENAI_API_KEY = _sanitize_key(os.environ.get("OPENAI_API_KEY"))
 GEMINI_API_KEY = _sanitize_key(os.environ.get("GEMINI_API_KEY"))
 GROQ_API_KEY = _sanitize_key(os.environ.get("GROQ_API_KEY"))
@@ -55,6 +58,7 @@ CAPTION_FONT_SIZE = 52
 MUSIC_DIR = os.path.join(OUTPUT_DIR, "bg_music")
 MEDIA_QUALITY_PROFILE = "balanced"
 MIN_MEDIA_DIMENSION = 480
+MIN_MEDIA_RELEVANCE_SCORE = 6
 
 # Global Generation Variables
 TOPIC_TITLE = "Your Next Reel"
@@ -64,12 +68,9 @@ BG_MUSIC_VIBE = "mystery"
 BG_MUSIC_TRACK_INDEX = 1
 
 # Creative brief defaults. The dashboard snapshots these values into every job
-# so queued/retried renders keep the user's selected content direction.
-CONTENT_NICHE = "General"
+# so queued/retried renders keep the user's selected language and tone.
 CONTENT_LANGUAGE = "Urdu"
 CONTENT_TONE = "Engaging & Clear"
-TARGET_PLATFORM = "Instagram Reels"
-VISUAL_STYLE = "Cinematic"
 
 # Neutral Urdu demo captions.
 CAPTION_TEXT_1 = """اپنے خیال کو ایک مختصر
@@ -128,8 +129,6 @@ VIDEO_WIDTH = 720
 VIDEO_HEIGHT = 1280
 
 SHOW_PROGRESS_BAR = True
-PROGRESS_BAR_COLOR = "gold"
-PROGRESS_BAR_HEIGHT = 8
 MAX_JOB_ATTEMPTS = 2
 JOB_WORKER_MODE = os.environ.get("JOB_WORKER_MODE", "thread").strip().lower()
 DASHBOARD_REQUIRE_AUTH = _env_flag("DASHBOARD_REQUIRE_AUTH")
@@ -139,22 +138,12 @@ WATERMARK_PATH = ""
 WATERMARK_SIZE = 100
 WATERMARK_OPACITY = 0.5
 WATERMARK_POSITION = "main_w-overlay_w-20:20"
-VIDEO_TRANSITION = "fade"
 OLLAMA_MODEL = "qwen2.5:7b"
-AUDIO_DUCKING = True
-VOICE_MASTERING = True
 AUDIO_NORMALIZATION = True
 AUDIO_TARGET_LUFS = -16.0
 AUDIO_TRUE_PEAK_DB = -1.5
 AUDIO_LOUDNESS_RANGE = 11.0
 LAST_ERROR_MESSAGE = ""
-CINEMATIC_GRAIN = False
-CAMERA_SHAKE = False
-TRANSITION_SFX = False
-WATERMARK_TEXT = ""
-TRANSITION_OFFSETS = []
-VOICE_PITCH = "default"
-AMBIENT_SOUND = None
 COLOR_FILTER = None
 # Pinterest search results often contain unrelated decorative graphics rather
 # than usable editorial media. Keep it out of normal reel generation.

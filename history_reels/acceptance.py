@@ -151,7 +151,6 @@ def run_acceptance(topic: str, provider: str, duration: int, project_root: Path,
     config.CLIP_DURATION_TARGET = 5.0
     config.VOICE_PROVIDER = "edge-tts"
     config.MEDIA_PREFERENCE = "mixed"
-    config.VIDEO_TRANSITION = "fade"
     config.SHOW_WATERMARK = False
     config.INTRO_BUMPER = None
     config.OUTRO_BUMPER = None
