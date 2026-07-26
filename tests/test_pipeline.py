@@ -212,7 +212,10 @@ class TestHistoryReels(unittest.TestCase):
                 FPS=25,
                 VIDEO_TRANSITION="slideleft",
             )
-            with patch("history_reels.renderer.run_command") as run:
+            with (
+                patch("history_reels.renderer.get_video_dimensions", return_value=(720, 1280)),
+                patch("history_reels.renderer.run_command") as run,
+            ):
                 build_video_frames(job, voice_dur=20.0)
             final_command = run.call_args_list[-1].args[0]
             filter_graph = final_command[final_command.index("-filter_complex") + 1]
