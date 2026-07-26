@@ -1,4 +1,5 @@
 import os
+import sys
 from history_reels.jobs import GenerationJob
 from history_reels.ffmpeg_runner import (
     PROBE_TIMEOUT_SECONDS,
@@ -91,13 +92,13 @@ def generate_voiceover(job: GenerationJob):
             temp_txt_path = os.path.join(job.TOPIC_TEMP_DIR, f"voice_text_{idx}.txt")
             with open(temp_txt_path, "w", encoding="utf-8") as f:
                 f.write(text)
+            target_voice = getattr(job, "VOICE_ID", None) or "ur-PK-AsadNeural"
+            if target_voice == "default_voice":
+                target_voice = "ur-PK-AsadNeural"
             cmd_tts = [
-                "edge-tts", "--file", temp_txt_path, "--voice", getattr(job, "VOICE_ID", "default_voice"),
+                sys.executable, "-m", "edge_tts", "--file", temp_txt_path, "--voice", target_voice,
                 "--write-media", seg_path
             ]
-            voice_pitch = getattr(job, "VOICE_PITCH", "default")
-            if voice_pitch and voice_pitch != "default":
-                cmd_tts.extend(["--pitch", voice_pitch])
             job_id = str(getattr(job, "job_id", "") or "") or None
             try:
                 run_command(cmd_tts, timeout=TTS_TIMEOUT_SECONDS, job_id=job_id, label="edge-tts")
@@ -116,14 +117,19 @@ def generate_voiceover(job: GenerationJob):
         durations.append(dur)
         print(f"Segment {idx} duration: {dur:.2f} seconds.")
         
-    # Check if target duration preset is specified, and pad the last slide if narration is shorter
+    # TARGET_DURATION guides script generation; it must never create a long
+    # silent tail or assign all missing time to the final visual.
     target_dur = getattr(job, "TARGET_DURATION", None)
-    needed_pad = 0
-    if target_dur:
-        voice_dur = sum(durations)
-        if voice_dur < target_dur and durations:
-            needed_pad = target_dur - voice_dur
-            durations[-1] += needed_pad
+    voice_dur = sum(durations)
+    shortfall = 0.0
+    if target_dur and voice_dur < float(target_dur):
+        shortfall = float(target_dur) - voice_dur
+        print(
+            f"Narration is {shortfall:.2f}s shorter than the requested target; "
+            "using the natural narration duration instead of adding silence."
+        )
+    job.ACTUAL_NARRATION_DURATION = voice_dur
+    job.DURATION_SHORTFALL = shortfall
 
     # Timings stay with this job and never leak into another render.
     timing = 0
@@ -136,6 +142,7 @@ def generate_voiceover(job: GenerationJob):
     voice_mp3 = os.path.join(job.TOPIC_TEMP_DIR, "voice.mp3")
     job_id = str(getattr(job, "job_id", "") or "") or None
     if not voice_segments:
+        job.SLIDE_TIMINGS = [1.0]
         run_command(
             ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "1.0", "-q:a", "9", "-acodec", "libmp3lame", voice_mp3],
             timeout=30,
@@ -154,17 +161,5 @@ def generate_voiceover(job: GenerationJob):
     cmd_concat.extend(["-filter_complex", f"{inputs_str}concat=n={n}:v=0:a=1[out]", "-map", "[out]", voice_mp3])
     run_command(cmd_concat, timeout=AUDIO_TIMEOUT_SECONDS, job_id=job_id, label="voice concat")
     
-    if needed_pad > 0:
-        padded_path = os.path.join(job.TOPIC_TEMP_DIR, "voice_padded.mp3")
-        pad_cmd = [
-            "ffmpeg", "-y", "-i", voice_mp3,
-            "-af", f"apad=pad_dur={needed_pad:.3f}",
-            padded_path
-        ]
-        run_command(pad_cmd, timeout=60, job_id=job_id, label="voice pad")
-        os.replace(padded_path, voice_mp3)
-        print(f"Padded final audio by {needed_pad:.2f}s to reach target {target_dur:.2f}s")
-    
-    voice_dur = sum(durations)
     print(f"Total concatenated voice duration: {voice_dur:.2f} seconds.")
     return voice_dur

@@ -105,8 +105,6 @@ class ScriptConfig(BaseModel):
             val = str(q).strip()
             if val:
                 cleaned.append(val)
-        while len(cleaned) < 8:
-            cleaned.append("cinematic")
         return cleaned
 
     @model_validator(mode="after")
@@ -119,11 +117,23 @@ class ScriptConfig(BaseModel):
             raise ValueError("At least one narration is required.")
         if len(self.captions) != len(self.narrations):
             raise ValueError("Captions and narrations must contain the same number of slides.")
+        if not self.queries:
+            raise ValueError("At least one concrete media query is required.")
         # Keep at least 8 media queries for the render loop, and never fewer
         # queries than slides. Extra queries are useful when clips are reused.
         target_queries = max(8, len(self.captions))
+        seed_queries = list(self.queries)
+        shot_variants = [
+            "wide establishing shot",
+            "person using it",
+            "workplace close up",
+            "equipment detail",
+        ]
         while len(self.queries) < target_queries:
-            self.queries.append("cinematic")
+            offset = len(self.queries) - len(seed_queries)
+            base_query = seed_queries[offset % len(seed_queries)]
+            variant = shot_variants[(offset // len(seed_queries)) % len(shot_variants)]
+            self.queries.append(f"{base_query} {variant}")
         if len(self.queries) > target_queries:
             self.queries = self.queries[:target_queries]
         return self
@@ -140,11 +150,8 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
     # job retain the legacy configuration defaults.
     settings = settings or config
     provider = str(provider).strip().lower()
-    niche = _creative_preference(settings, "CONTENT_NICHE", "General")
     language = _creative_preference(settings, "CONTENT_LANGUAGE", "Urdu")
     tone = _creative_preference(settings, "CONTENT_TONE", "Engaging & Clear")
-    platform = _creative_preference(settings, "TARGET_PLATFORM", "Instagram Reels")
-    visual_style = _creative_preference(settings, "VISUAL_STYLE", "Cinematic")
     schema_language = "the source script's original language" if is_raw_script else language
     schema_details = (
         "{\n"
@@ -154,7 +161,7 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
         f"  \"captions\": [\"{schema_language} text for Slide 1...\", \"{schema_language} text for Slide 2...\", \"...generate as many as needed to reach target duration\"],\n"
         f"  \"narrations\": [\"{schema_language} narration for Slide 1...\", \"{schema_language} narration for Slide 2...\", \"...must match number of captions\"],\n"
         "  \"queries\": [\n"
-        "    \"specific search queries for stock video/images matching the script flow, e.g. ['student studying', 'morning routine', 'healthy meal prep', 'home workout', 'travel landscape', 'smartphone editing', 'creator desk', 'cinematic city']\"\n"
+        "    \"3-7 word English queries describing concrete visible stock shots in script order, e.g. ['student writing notes desk', 'runner checking smart watch', 'chef preparing vegetables closeup', 'office team video meeting']\"\n"
         "  ],\n"
         "  \"seo_title\": \"Hook/Title for social media (e.g., 3 Study Habits That Actually Work ✨)\",\n"
         f"  \"seo_description\": \"Detailed social media caption written in {language}\",\n"
@@ -165,23 +172,38 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
 
     target_dur = getattr(settings, "TARGET_DURATION", None)
     if target_dur:
-        num_slides = int(target_dur / 5.0)
-        duration_instruction = f"IMPORTANT: The user requested a target video duration of {target_dur} seconds. You MUST generate approximately {num_slides} items in the captions, narrations, and queries arrays."
+        target_seconds = max(10, int(float(target_dur)))
+        num_slides = min(60, max(4, int(round(target_seconds / 4.0))))
+        minimum_words = int(round(target_seconds * 1.8))
+        maximum_words = int(round(target_seconds * 2.2))
+        duration_instruction = (
+            f"IMPORTANT LENGTH CONTRACT: The requested duration is {target_seconds} seconds. "
+            f"Generate EXACTLY {num_slides} captions, {num_slides} narrations, and "
+            f"{num_slides} queries. Across all narration strings, write between "
+            f"{minimum_words} and {maximum_words} naturally spoken words. Narrations "
+            "must be complete spoken sentences, not short labels. The renderer will "
+            "not add silence if the script is too short, so satisfy both the exact "
+            "array count and total narration word range."
+        )
     else:
         duration_instruction = "IMPORTANT: Generate exactly as many captions, narrations, and queries as needed."
 
     creative_brief = (
         "CREATIVE BRIEF (follow every item): "
-        f"Niche: {niche}. Content language: {language}. Tone: {tone}. "
-        f"Target platform: {platform}. Visual style: {visual_style}. "
-        f"Write captions and narrations exclusively in {language}; write media search queries in English; "
-        "tailor the hook, SEO copy, hashtags, pacing, and visual queries to this brief."
+        f"Content language: {language}. Tone: {tone}. "
+        f"Write captions and narrations exclusively in {language}; write media search queries in English. "
+        "Every query must name something a camera can directly show; never use vague phrases such as "
+        "'futuristic concept', 'applications in daily life', or a bare topic plus 'technology'. "
+        "Keep the first six shots visually distinct, use the same central subject at most twice, and vary "
+        "people, locations, devices, infrastructure, and detail shots while following the script flow. "
+        "Tailor the hook, SEO copy, hashtags, pacing, and visual queries to this brief."
     )
     raw_creative_brief = (
         "CREATIVE BRIEF: "
-        f"Niche: {niche}. Tone: {tone}. Target platform: {platform}. Visual style: {visual_style}. "
+        f"Tone: {tone}. "
         f"Preserve captions and narrations in the source script's original language; write SEO copy in {language}; "
-        "write media search queries in English and tailor them to the selected visual style."
+        "write concrete 3-7 word English media queries that describe directly visible, distinct shots "
+        "in script order; avoid abstract concepts and repeated central subjects."
     )
 
     if is_raw_script:
@@ -197,6 +219,10 @@ def fetch_ai_script(topic, provider="gemini", is_raw_script=False, settings=None
     else:
         system_prompt = (
             "You are an expert short-form viral video producer and scriptwriter. Generate a highly engaging script configuration for any niche in JSON format. "
+            "VIRAL HOOK ARCHITECTURE: "
+            "1. Slide 1 (0-3s): Start with a powerful 3-second psychological curiosity or pattern-interrupt hook that captures immediate attention. "
+            "2. Middle Slides: Fast-paced, high-retention storytelling building intrigue and value. "
+            "3. Final Slide: Include a natural, compelling engagement Call-To-Action (CTA) encouraging viewers to follow and save. "
             f"{creative_brief} {duration_instruction} The output must strictly follow this JSON schema:\n{schema_details}"
         )
         user_prompt = f"Generate script configuration in valid JSON format for topic: {topic}"

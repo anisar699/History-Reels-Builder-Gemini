@@ -1,6 +1,10 @@
 import os
 from history_reels.jobs import GenerationJob
-from history_reels.subtitles import write_ass_subtitles
+from history_reels.subtitles import (
+    render_caption_overlays,
+    uses_rasterized_captions,
+    write_ass_subtitles,
+)
 from history_reels.ffmpeg_runner import (
     AUDIO_TIMEOUT_SECONDS,
     CLIP_TIMEOUT_SECONDS,
@@ -9,6 +13,7 @@ from history_reels.ffmpeg_runner import (
     run_command,
     write_fontconfig_file,
 )
+from history_reels.visual_quality import find_raw_media_path
 
 
 def get_video_dimensions(path):
@@ -19,79 +24,168 @@ def _job_id(job: GenerationJob) -> str | None:
     return str(getattr(job, "job_id", "") or "") or None
 
 
+def crop_window(
+    width: int,
+    height: int,
+    target_ratio: float,
+    focus_x: float = 0.5,
+    focus_y: float = 0.5,
+) -> tuple[int, int, int, int]:
+    """Return an even crop centred as closely as possible on visual saliency."""
+    width, height = max(2, int(width)), max(2, int(height))
+    target_ratio = max(0.01, float(target_ratio))
+    if width / height > target_ratio:
+        crop_height = height - (height % 2)
+        crop_width = min(width, int(crop_height * target_ratio))
+    else:
+        crop_width = width - (width % 2)
+        crop_height = min(height, int(crop_width / target_ratio))
+    crop_width = max(2, crop_width - (crop_width % 2))
+    crop_height = max(2, crop_height - (crop_height % 2))
+    centre_x = min(1.0, max(0.0, float(focus_x))) * width
+    centre_y = min(1.0, max(0.0, float(focus_y))) * height
+    offset_x = int(round(centre_x - crop_width / 2))
+    offset_y = int(round(centre_y - crop_height / 2))
+    offset_x = min(max(0, offset_x), width - crop_width)
+    offset_y = min(max(0, offset_y), height - crop_height)
+    offset_x -= offset_x % 2
+    offset_y -= offset_y % 2
+    return crop_width, crop_height, offset_x, offset_y
+
+
+def _slide_durations(job: GenerationJob, voice_dur: float) -> list[float]:
+    timings = list(getattr(job, "SLIDE_TIMINGS", []) or [])
+    if not timings:
+        return []
+    durations = []
+    previous = 0.0
+    for raw_end in timings:
+        try:
+            end = min(float(voice_dur), max(previous, float(raw_end)))
+        except (TypeError, ValueError):
+            return []
+        durations.append(max(0.1, end - previous))
+        previous = end
+    if durations and previous < voice_dur:
+        durations[-1] += voice_dur - previous
+    return durations
+
+
+def _visual_focus(job: GenerationJob, source_index: int) -> tuple[float, float]:
+    reports = getattr(job, "MEDIA_QA_BY_INDEX", {}) or {}
+    report = reports.get(source_index) or reports.get(str(source_index)) or {}
+    return float(report.get("focus_x", 0.5)), float(report.get("focus_y", 0.5))
+
+
 def build_video_frames(job: GenerationJob, voice_dur):
     print("Extracting clips from source videos...")
     
     target_clip_dur = getattr(job, "CLIP_DURATION_TARGET", 5.0)
-    divisor = max(0.1, target_clip_dur - job.CROSSFADE_DUR)
-    estimated_clips = max(1, int(round((voice_dur - job.CROSSFADE_DUR) / divisor)))
-    
-    repeats = 2 if target_clip_dur < 4.0 else 1
     available_media = len(job.QUERIES)
     if available_media < 1:
         raise RuntimeError("No usable media assets are available for frame generation.")
-    max_available = max(4, available_media * repeats)
-    num_clips = min(max(4, estimated_clips), max_available)
-    
-    job.NUM_CLIPS = num_clips
-    
-    total_visual_dur = voice_dur + (job.NUM_CLIPS - 1) * job.CROSSFADE_DUR
-    clip_dur = total_visual_dur / job.NUM_CLIPS
-    print(f"Dynamic clip duration: {clip_dur:.2f}s (Target: {target_clip_dur:.2f}s, Cuts: {job.NUM_CLIPS}) (Total video duration: {voice_dur:.2f}s)")
+
+    narration_durations = _slide_durations(job, voice_dur)
+    if narration_durations and len(narration_durations) <= available_media:
+        job.NUM_CLIPS = len(narration_durations)
+        clip_durations = [
+            duration + (job.CROSSFADE_DUR if index < len(narration_durations) - 1 else 0.0)
+            for index, duration in enumerate(narration_durations)
+        ]
+        timing_mode = "narration slides"
+    else:
+        divisor = max(0.1, target_clip_dur - job.CROSSFADE_DUR)
+        estimated_clips = max(1, int(round((voice_dur - job.CROSSFADE_DUR) / divisor)))
+        repeats = 2 if target_clip_dur < 4.0 else 1
+        max_available = max(4, available_media * repeats)
+        job.NUM_CLIPS = min(max(4, estimated_clips), max_available)
+        total_visual_dur = voice_dur + (job.NUM_CLIPS - 1) * job.CROSSFADE_DUR
+        clip_durations = [total_visual_dur / job.NUM_CLIPS] * job.NUM_CLIPS
+        timing_mode = "pacing fallback"
+    job.CLIP_DURATIONS = clip_durations
+    print(
+        f"Visual timing: {timing_mode}, {job.NUM_CLIPS} cuts "
+        f"(durations: {', '.join(f'{value:.2f}s' for value in clip_durations)})"
+    )
     
     clips = []
     for i in range(1, job.NUM_CLIPS + 1):
         source_index = ((i - 1) % available_media) + 1
-        raw_path_mp4 = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{source_index}.mp4")
-        raw_path_jpg = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{source_index}.jpg")
-        raw_path_png = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{source_index}.png")
+        raw_media_path = find_raw_media_path(job.TOPIC_TEMP_DIR, source_index)
+        clip_dur = clip_durations[i - 1]
+        focus_x, focus_y = _visual_focus(job, source_index)
         
         clip_path = os.path.join(job.TOPIC_TEMP_DIR, f"clip{i}.mp4")
         clips.append(clip_path)
         
-        if os.path.exists(raw_path_mp4):
+        if raw_media_path and os.path.splitext(raw_media_path)[1].lower() == ".mp4":
             # Process Video Clip
-            w, h = get_video_dimensions(raw_path_mp4)
+            w, h = get_video_dimensions(raw_media_path)
             if w <= 0 or h <= 0:
                 raise RuntimeError(
                     f"Downloaded media clip {source_index} has invalid dimensions ({w}x{h}); "
                     "a blank placeholder will not be used. Retry to download fresh media."
                 )
             target_aspect = job.VIDEO_WIDTH / job.VIDEO_HEIGHT
-            if (w / h) > target_aspect:
-                crop_h = h
-                crop_w = int(h * target_aspect)
-                if crop_w % 2 != 0:
-                    crop_w += 1
-            else:
-                crop_w = w
-                crop_h = int(w / target_aspect)
-                if crop_h % 2 != 0:
-                    crop_h += 1
-
-            crop_w = min(crop_w, w - (w % 2))
-            crop_h = min(crop_h, h - (h % 2))
-            offset_x = max(0, (w - crop_w) // 2)
-            offset_y = max(0, (h - crop_h) // 2)
+            crop_w, crop_h, offset_x, offset_y = crop_window(
+                w, h, target_aspect, focus_x, focus_y
+            )
                 
             vf = f"crop={crop_w}:{crop_h}:{offset_x}:{offset_y},scale={job.VIDEO_WIDTH}:{job.VIDEO_HEIGHT}"
             cmd = [
-                "ffmpeg", "-y", "-ss", "0.0", "-stream_loop", "-1", "-i", raw_path_mp4, "-t", f"{clip_dur:.3f}",
+                "ffmpeg", "-y", "-threads", "0", "-ss", "0.0", "-stream_loop", "-1", "-i", raw_media_path, "-t", f"{clip_dur:.3f}",
                 "-vf", vf, "-an", "-r", str(job.FPS), "-pix_fmt", "yuv420p", clip_path
             ]
             run_command(cmd, timeout=CLIP_TIMEOUT_SECONDS, job_id=_job_id(job), label="clip extract")
             
         else:
-            # Process Image Clip (Convert to video using Ken Burns zoom effect)
-            img_path = raw_path_jpg if os.path.exists(raw_path_jpg) else raw_path_png
-            if not os.path.exists(img_path):
+            # Process Image Clip (Convert to video using Dynamic Ken Burns Motion)
+            img_path = raw_media_path
+            if not img_path or not os.path.exists(img_path):
                 raise FileNotFoundError(f"Error: No video or image clip found for index {i}")
-                
-            scale_w = int(job.VIDEO_WIDTH * 2)
-            scale_h = int(job.VIDEO_HEIGHT * 2)
-            vf_zoom = f"scale={scale_w}:{scale_h}:force_original_aspect_ratio=decrease,pad={scale_w}:{scale_h}:(ow-iw)/2:(oh-ih)/2,zoompan=z='zoom+0.0005':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={int(job.FPS * clip_dur)}:s={job.VIDEO_WIDTH}x{job.VIDEO_HEIGHT},fps={job.FPS}"
+
+            image_w, image_h = get_video_dimensions(img_path)
+            if image_w <= 0 or image_h <= 0:
+                # Download-time QA normally supplies real dimensions. Retain a
+                # safe centred filter for legacy/prevalidated workspaces where
+                # metadata probing is unavailable.
+                image_w, image_h = job.VIDEO_WIDTH, job.VIDEO_HEIGHT
+            crop_w, crop_h, offset_x, offset_y = crop_window(
+                image_w,
+                image_h,
+                job.VIDEO_WIDTH / job.VIDEO_HEIGHT,
+                focus_x,
+                focus_y,
+            )
+            scale_w = int(job.VIDEO_WIDTH * 1.35)
+            scale_h = int(job.VIDEO_HEIGHT * 1.35)
+            frames_count = max(1, int(job.FPS * clip_dur))
+            motion_type = (i - 1) % 4
+            if motion_type == 0:
+                z_expr = "min(zoom+0.0012,1.3)"
+                x_expr = "iw/2-(iw/zoom/2)"
+                y_expr = "ih/2-(ih/zoom/2)"
+            elif motion_type == 1:
+                z_expr = "1.2"
+                x_expr = "if(lte(on,1),(iw-iw/zoom),(x-1.2))"
+                y_expr = "ih/2-(ih/zoom/2)"
+            elif motion_type == 2:
+                z_expr = "max(1.3-0.0012*on,1.0)"
+                x_expr = "iw/2-(iw/zoom/2)"
+                y_expr = "ih/2-(ih/zoom/2)"
+            else:
+                z_expr = "1.2"
+                x_expr = "iw/2-(iw/zoom/2)"
+                y_expr = "if(lte(on,1),(ih-ih/zoom),(y-1.2))"
+
+            vf_zoom = (
+                f"crop={crop_w}:{crop_h}:{offset_x}:{offset_y},"
+                f"scale={scale_w}:{scale_h},"
+                f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':d={frames_count}:s={job.VIDEO_WIDTH}x{job.VIDEO_HEIGHT},"
+                f"fps={job.FPS}"
+            )
             cmd = [
-                "ffmpeg", "-y", "-i", img_path, "-t", f"{clip_dur:.3f}",
+                "ffmpeg", "-y", "-threads", "0", "-i", img_path, "-t", f"{clip_dur:.3f}",
                 "-vf", vf_zoom, "-an", "-r", str(job.FPS), "-pix_fmt", "yuv420p", clip_path
             ]
             run_command(cmd, timeout=CLIP_TIMEOUT_SECONDS, job_id=_job_id(job), label="image ken-burns")
@@ -107,25 +201,13 @@ def build_video_frames(job: GenerationJob, voice_dur):
         
     filter_parts = []
     last_label = "0:v"
-    curr_offset = max(0, clip_dur - job.CROSSFADE_DUR)
-    job.TRANSITION_OFFSETS = []
-    
-    transition_style = str(getattr(job, "VIDEO_TRANSITION", "fade")).lower()
-    allowed_transitions = ["fade", "slideleft", "slideright", "slideup", "slidedown", "wipeleft", "wiperight", "zoomin", "dissolve", "pixelize", "radial"]
+    curr_offset = max(0, clip_durations[0] - job.CROSSFADE_DUR)
     
     for i in range(1, job.NUM_CLIPS):
-        job.TRANSITION_OFFSETS.append(curr_offset)
         out_label = f"v{i}"
-        t_style = transition_style
-        if t_style == "random":
-            import random
-            t_style = random.choice(allowed_transitions)
-        elif t_style not in allowed_transitions:
-            t_style = "fade"
-            
-        filter_parts.append(f"[{last_label}][{i}:v]xfade=transition={t_style}:duration={job.CROSSFADE_DUR}:offset={curr_offset:.3f}[{out_label}]")
+        filter_parts.append(f"[{last_label}][{i}:v]xfade=transition=fade:duration={job.CROSSFADE_DUR}:offset={curr_offset:.3f}[{out_label}]")
         last_label = out_label
-        curr_offset += max(0.1, clip_dur - job.CROSSFADE_DUR)
+        curr_offset += max(0.1, clip_durations[i] - job.CROSSFADE_DUR)
         
     filter_complex = ";".join(filter_parts)
     
@@ -142,86 +224,39 @@ def setup_fontconfig(job: GenerationJob):
     """Write a job-local fonts.conf and return its path (no global FONTCONFIG_FILE mutation)."""
     return write_fontconfig_file(job)
 
-def generate_whoosh_sound(job: GenerationJob):
-    whoosh_path = os.path.join(job.TOPIC_TEMP_DIR, "whoosh.wav")
-    if os.path.exists(whoosh_path):
-        return whoosh_path
-    cmd = [
-        "ffmpeg", "-y", "-f", "lavfi",
-        "-i", "aevalsrc=sin(2*PI*(180+500*sin(PI*t/0.5))*t):d=0.5",
-        "-af", "volume='sin(PI*t/0.5)':eval=frame",
-        whoosh_path
-    ]
-    run_command(cmd, timeout=30, job_id=_job_id(job), label="whoosh sfx")
-    return whoosh_path
-
 def run_ffmpeg(job: GenerationJob, voice_dur):
     print("Mixing background music and voiceover...")
     drone_wav = os.path.join(job.TOPIC_TEMP_DIR, "drone.wav")
-    music_mp3 = os.path.join(job.MUSIC_DIR, f"{job.BG_MUSIC_VIBE}_{job.BG_MUSIC_TRACK_INDEX}.mp3")
+    music_mp3 = str(
+        getattr(job, "MUSIC_PATH", "")
+        or os.path.join(job.MUSIC_DIR, f"{job.BG_MUSIC_VIBE}_{job.BG_MUSIC_TRACK_INDEX}.mp3")
+    )
     voice_mp3 = os.path.join(job.TOPIC_TEMP_DIR, "voice.mp3")
     
-    # Mix audio with dynamic filters
-    ducking = getattr(job, "AUDIO_DUCKING", True)
-    mastering = getattr(job, "VOICE_MASTERING", True)
-    trans_sfx = getattr(job, "TRANSITION_SFX", False)
-    
-    # 1. Voice processing chain
-    voice_filter = f"[1:a]atrim=0:{voice_dur:.3f},asetpts=PTS-STARTPTS"
-    if mastering:
-        voice_filter += ",equalizer=f=100:width_type=h:width=100:g=4,equalizer=f=3500:width_type=h:width=2000:g=2,acompressor=threshold=0.08:ratio=3:attack=20:release=150"
-    voice_filter += ",volume=1.8"
+    # Voice mastering and music ducking are fixed quality safeguards.
+    voice_filter = (
+        f"[1:a]atrim=0:{voice_dur:.3f},asetpts=PTS-STARTPTS,"
+        "equalizer=f=100:width_type=h:width=100:g=4,"
+        "equalizer=f=3500:width_type=h:width=2000:g=2,"
+        "acompressor=threshold=0.08:ratio=3:attack=20:release=150,"
+        "volume=1.8"
+    )
     
     # 2. Filter complex composition.
     filter_parts = []
-    use_whooshes = trans_sfx and bool(getattr(job, "TRANSITION_OFFSETS", []))
-    whoosh_input_index = 2
     
-    music_vol = 0.25 if ducking else 0.15
+    music_vol = 0.25
     fade_out_st = max(0.0, voice_dur - 0.8)
     music_filter = f"[0:a]atrim=0:{voice_dur:.3f},asetpts=PTS-STARTPTS,afade=t=in:d=0.5,afade=t=out:st={fade_out_st:.3f}:d=0.8,volume={music_vol}"
-    if ducking:
-        filter_parts.append(f"{voice_filter}[voice_full]")
-        filter_parts.append("[voice_full]asplit=2[sc][voice]")
-        filter_parts.append(f"{music_filter}[music_raw]")
-        filter_parts.append("[music_raw][sc]sidechaincompress=threshold=0.1:ratio=5:attack=80:release=350[music]")
-    else:
-        filter_parts.append(f"{voice_filter}[voice]")
-        filter_parts.append(f"{music_filter}[music]")
+    filter_parts.append(f"{voice_filter}[voice_full]")
+    filter_parts.append("[voice_full]asplit=2[sc][voice]")
+    filter_parts.append(f"{music_filter}[music_raw]")
+    filter_parts.append("[music_raw][sc]sidechaincompress=threshold=0.1:ratio=5:attack=80:release=350[music]")
         
-    if use_whooshes:
-        offsets = job.TRANSITION_OFFSETS
-        num_t = len(offsets)
-        if num_t == 1:
-            filter_parts.append(f"[{whoosh_input_index}:a]anull[w0]")
-        else:
-            filter_parts.append(f"[{whoosh_input_index}:a]asplit={num_t}" + "".join(f"[w{j}]" for j in range(num_t)))
-        for j, off in enumerate(offsets):
-            offset_ms = int(off * 1000)
-            filter_parts.append(f"[w{j}]adelay={offset_ms}|{offset_ms},volume=0.45[whoosh{j}]")
-        if num_t == 1:
-            filter_parts.append("[whoosh0]acopy[whoosh_mix]")
-        else:
-            filter_parts.append("".join(f"[whoosh{j}]" for j in range(num_t)) + f"amix=inputs={num_t}:duration=longest[whoosh_mix]")
-        filter_parts.append("[music][voice][whoosh_mix]amix=inputs=3:duration=longest:dropout_transition=2[pre_out]")
-    else:
-        filter_parts.append("[music][voice]amix=inputs=2:duration=longest:dropout_transition=2[pre_out]")
-        
-    ambient_sound = getattr(job, "AMBIENT_SOUND", None)
-    if ambient_sound:
-        if ambient_sound == "rain":
-            filter_parts.append(f"anoisesrc=a=0.15:c=pink:d={voice_dur:.3f},lowpass=f=1200[amb];[pre_out][amb]amix=inputs=2:duration=longest:dropout_transition=2[out]")
-        elif ambient_sound == "wind":
-            filter_parts.append(f"anoisesrc=a=0.3:c=brown:d={voice_dur:.3f},lowpass=f=500[amb];[pre_out][amb]amix=inputs=2:duration=longest:dropout_transition=2[out]")
-        elif ambient_sound == "rumble":
-            filter_parts.append(f"anoisesrc=a=0.4:c=brown:d={voice_dur:.3f},lowpass=f=80[amb];[pre_out][amb]amix=inputs=2:duration=longest:dropout_transition=2[out]")
-        else:
-            filter_parts.append("[pre_out]acopy[out]")
-    else:
-        filter_parts.append("[pre_out]acopy[out]")
+    filter_parts.append("[music][voice]amix=inputs=2:duration=longest:dropout_transition=2[out]")
 
-    # Keep every export at a consistent listening level after voice, music,
-    # ambient audio, and transition effects have been mixed together.
+    # Keep every export at a consistent listening level after voice and music
+    # have been mixed together.
     audio_output_label = "[out]"
     if getattr(job, "AUDIO_NORMALIZATION", True):
         target_lufs = float(getattr(job, "AUDIO_TARGET_LUFS", -16.0))
@@ -235,82 +270,75 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
     filter_complex = ";".join(filter_parts)
     
     cmd_audio = ["ffmpeg", "-y", "-stream_loop", "-1", "-i", music_mp3, "-i", voice_mp3]
-    if use_whooshes:
-        whoosh_wav = generate_whoosh_sound(job)
-        cmd_audio.extend(["-i", whoosh_wav])
-        
     cmd_audio.extend([
         "-filter_complex", filter_complex,
         "-map", audio_output_label, drone_wav
     ])
     run_command(cmd_audio, timeout=AUDIO_TIMEOUT_SECONDS, job_id=_job_id(job), label="audio mix")
     
-    # Write ASS captions using the selected sidebar font configuration.
-    ass_path = os.path.join(job.TOPIC_TEMP_DIR, "subtitles.ass")
-    write_ass_subtitles(ass_path, job)
-    fonts_conf_path = setup_fontconfig(job)
+    # libass can silently drop Nastaliq glyphs on Windows even when the font is
+    # found. Pillow/RAQM produces shaped transparent overlays for RTL scripts.
+    raster_captions = uses_rasterized_captions(job)
+    caption_overlays = []
+    ass_path = None
+    fonts_conf_path = None
+    if raster_captions:
+        caption_overlays = render_caption_overlays(job)
+    else:
+        ass_path = os.path.join(job.TOPIC_TEMP_DIR, "subtitles.ass")
+        write_ass_subtitles(ass_path, job)
+        fonts_conf_path = setup_fontconfig(job)
     
-    print("Merging audio and video with color grading, fades, ASS subtitles, and custom overlays...")
+    caption_mode = "RAQM caption overlays" if raster_captions else "ASS subtitles"
+    print(f"Merging audio and video with color grading, fades, {caption_mode}, and custom overlays...")
     output_mp4 = os.path.join(job.TOPIC_TEMP_DIR, "output.mp4")
     
     # Build filter complex for video overlays
     filter_parts = []
     
     # 1. Base video grading & subtitles with upgrades
-    camera_shake = getattr(job, "CAMERA_SHAKE", False)
-    offsets = getattr(job, "TRANSITION_OFFSETS", [])
-    
     color_filter = getattr(job, "COLOR_FILTER", None)
-    if color_filter == "horror":
-        v_filters = ["eq=contrast=1.3:brightness=-0.1:saturation=0.5,colorbalance=rs=-0.2:bs=0.2"]
-    elif color_filter == "cyberpunk":
-        v_filters = ["eq=contrast=1.2:saturation=1.5,colorbalance=rs=0.2:bs=0.3"]
-    elif color_filter == "vintage":
-        v_filters = ["eq=contrast=1.1:saturation=0.7,colorbalance=rs=0.1:bs=-0.1:gs=0.05"]
-    elif color_filter == "documentary":
-        v_filters = ["eq=contrast=1.2:saturation=0.9"]
+    if color_filter == "documentary":
+        v_filters = ["eq=contrast=1.10:brightness=-0.02:saturation=0.92"]
     else:
-        v_filters = ["eq=contrast=1.15:brightness=-0.15:saturation=1.2"]
-    
-    if camera_shake and offsets:
-        in_trans_parts = [f"between(t,{off-0.12:.3f},{off+0.12:.3f})" for off in offsets]
-        in_trans = "+".join(in_trans_parts)
-        v_filters.append(f"crop=w=iw-24:h=ih-24:x='12+12*sin(2*PI*t*16)*({in_trans})':y='12+12*cos(2*PI*t*16)*({in_trans})'")
-        v_filters.append(f"scale={job.VIDEO_WIDTH}:{job.VIDEO_HEIGHT}")
-        
-    use_grain = getattr(job, "CINEMATIC_GRAIN", False)
-    if use_grain:
-        v_filters.append("noise=alls=8:allf=t+u")
+        # Preserve source exposure. The previous -0.15 brightness crushed
+        # already-dark stock footage after the crop.
+        v_filters = ["eq=contrast=1.07:brightness=-0.04:saturation=1.08"]
         
     v_filters.append(f"fade=t=in:st=0:d=0.3")
     v_filters.append(f"fade=t=out:st={voice_dur-0.5:.3f}:d=0.5")
-    
-    wm_text = getattr(job, "WATERMARK_TEXT", "")
-    if wm_text:
-        safe_text = wm_text.replace("'", "'\\''")
-        safe_text = safe_text.replace(";", "\\;")
-        font_clean = job.FONT_PATH.replace("\\", "/")
-        font_arg = f":fontfile='{font_clean}'" if os.path.exists(job.FONT_PATH) else ""
-        v_filters.append(f"drawtext=text='{safe_text}':fontsize=22:fontcolor=white@0.6{font_arg}:x=(w-tw)/2:y=h-70")
         
-    ass_path_clean = ass_path.replace("\\", "/")
-    font_dir_clean = os.path.dirname(os.path.abspath(job.FONT_PATH)).replace("\\", "/")
-    v_filters.append(f"subtitles='{ass_path_clean}':fontsdir='{font_dir_clean}'")
+    if ass_path:
+        ass_path_clean = ass_path.replace("\\", "/").replace(":", "\\:")
+        font_dir_clean = os.path.dirname(os.path.abspath(job.FONT_PATH)).replace("\\", "/").replace(":", "\\:")
+        v_filters.append(f"subtitles=f='{ass_path_clean}':fontsdir='{font_dir_clean}'")
     
     v_filter_str = ",".join(v_filters)
     filter_parts.append(f"[0:v]{v_filter_str}[v_base]")
     last_v_label = "[v_base]"
-    # 2. Progress Bar Overlay
+
+    # 2. Timed, pre-shaped Urdu/Arabic caption overlays.
+    for overlay_number, overlay in enumerate(caption_overlays):
+        input_index = 2 + overlay_number
+        output_label = f"[v_caption_{overlay_number}]"
+        filter_parts.append(
+            f"{last_v_label}[{input_index}:v]overlay=0:{int(overlay['y'])}:"
+            f"enable='between(t,{overlay['start']:.3f},{overlay['end']:.3f})':"
+            f"eof_action=repeat:shortest=0{output_label}"
+        )
+        last_v_label = output_label
+
+    # 3. Progress Bar Overlay
     show_bar = getattr(job, "SHOW_PROGRESS_BAR", True)
-    bar_color = getattr(job, "PROGRESS_BAR_COLOR", "gold").lower()
-    bar_height = getattr(job, "PROGRESS_BAR_HEIGHT", 8)
     if show_bar:
+        bar_color = "gold"
+        bar_height = 8
         safe_voice_dur = max(0.1, voice_dur)
         filter_parts.append(f"color=c={bar_color}:s={job.VIDEO_WIDTH}x{bar_height}:d={voice_dur:.3f}[bar]")
         filter_parts.append(f"{last_v_label}[bar]overlay=-w+(w/{safe_voice_dur:.3f})*t:main_h-overlay_h[v_bar]")
         last_v_label = "[v_bar]"
         
-    # 3. Watermark Logo Overlay
+    # 4. Watermark Logo Overlay
     show_logo = getattr(job, "SHOW_WATERMARK", False)
     configured_logo = str(getattr(job, "WATERMARK_PATH", "") or "").strip()
     logo_path = configured_logo or os.path.join(job.OUTPUT_DIR, "watermark.png")
@@ -322,13 +350,16 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
         logo_pos = getattr(job, "WATERMARK_POSITION", "main_w-overlay_w-20:20")
         
         # Scale logo and apply opacity
-        filter_parts.append(f"[2:v]scale={logo_size}:-1,format=yuva420p,colorchannelmixer=aa={logo_opacity:.2f}[logo]")
+        logo_input_index = 2 + len(caption_overlays)
+        filter_parts.append(f"[{logo_input_index}:v]scale={logo_size}:-1,format=yuva420p,colorchannelmixer=aa={logo_opacity:.2f}[logo]")
         filter_parts.append(f"{last_v_label}[logo]overlay={logo_pos}[v_final]")
         last_v_label = "[v_final]"
         
     filter_complex = ";".join(filter_parts)
     
-    cmd_merge = ["ffmpeg", "-y", "-i", "silent_temp.mp4", "-i", "drone.wav"]
+    cmd_merge = ["ffmpeg", "-y", "-threads", "0", "-i", "silent_temp.mp4", "-i", "drone.wav"]
+    for overlay in caption_overlays:
+        cmd_merge.extend(["-loop", "1", "-framerate", str(job.FPS), "-i", overlay["path"]])
     if has_logo:
         cmd_merge.extend(["-i", logo_path])
         
@@ -337,15 +368,21 @@ def run_ffmpeg(job: GenerationJob, voice_dur):
         "-map", last_v_label,
         "-map", "1:a",
         "-shortest",
+        # Infinite-loop caption image inputs can make FFmpeg's framesync emit
+        # extra video frames after the 12/30/60s narration has ended. Enforce
+        # the narration duration explicitly so audio, captions, and video end
+        # on the same timeline.
+        "-t", f"{voice_dur:.3f}",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-preset", "fast",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "output.mp4"
     ])
-    # Pass FONTCONFIG_FILE only into this subprocess — never mutate global os.environ.
+    # Pass FONTCONFIG_FILE only for ASS renders — never mutate global os.environ.
+    merge_env = {"FONTCONFIG_FILE": fonts_conf_path} if fonts_conf_path else None
     run_command(
         cmd_merge,
         timeout=MERGE_TIMEOUT_SECONDS,
         cwd=job.TOPIC_TEMP_DIR,
-        env={"FONTCONFIG_FILE": fonts_conf_path},
+        env=merge_env,
         job_id=_job_id(job),
         label="final merge",
     )

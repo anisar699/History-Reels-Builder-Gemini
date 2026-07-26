@@ -11,26 +11,37 @@ from history_reels import config
 from history_reels.acceptance import classify_acceptance_failure, validate_video_artifact
 from history_reels.cli import check_inputs, copy_deliverables, download_visuals, generate_video_for_topic, main as cli_main
 from history_reels.font_manager import get_font_preset, prepare_caption_font
-from history_reels.music_library import local_track_command, resolve_music_vibe
+from history_reels.music_library import MUSIC_TRACK_DURATION_SECONDS, local_track_command, resolve_music_vibe
 from history_reels.job_manager import JobManager
 from history_reels.job_store import JobStore, categorize_error, snapshot_safe_settings, get_dashboard_metrics
 from history_reels.input_validation import validate_external_url, validate_uploaded_file
 from history_reels.jobs import create_generation_job
 from history_reels.news_scraper import fetch_public_response
-from history_reels.renderer import build_video_frames, run_ffmpeg
+from history_reels.renderer import build_video_frames, crop_window, run_ffmpeg
 from history_reels.security import dashboard_auth_required, hash_password, save_local_env_values, session_key_override_allowed, verify_password
 from history_reels.script_generator import ScriptConfig, build_api_request_error, fetch_ai_script
 from history_reels.stock_media import (
     accept_downloaded_image,
+    acceptable_media_metadata,
+    diversify_media_queries,
     download_clip_for_query,
     effective_min_media_dimension,
+    media_candidate_score,
+    media_text_relevance_score,
     media_quality_score,
+    is_safe_media_metadata,
     _safe_error_message,
 )
 from history_reels.ffmpeg_runner import RenderError, kill_job_processes, run_command
-from history_reels.subtitles import write_ass_subtitles
+from history_reels.subtitles import (
+    _font_for_text,
+    _load_mixed_script_fallback,
+    render_caption_overlays,
+    write_ass_subtitles,
+)
 from history_reels.verification import run_verification_matrix, verify_deliverable
-from history_reels.voiceover import filter_voices_for_language
+from history_reels.voiceover import filter_voices_for_language, generate_voiceover
+from history_reels.visual_quality import _timeline_failures, hash_distance, inspect_image
 from history_reels.worker import run_job
 
 class TestHistoryReels(unittest.TestCase):
@@ -116,10 +127,17 @@ class TestHistoryReels(unittest.TestCase):
                 video_path=str(video_path), seo_path=str(seo_path), VIDEO_WIDTH=720, VIDEO_HEIGHT=1280,
                 OUTPUT_DIR=temp_dir, OUTPUT_NAME="reel",
             )
-            with patch("history_reels.verification.subprocess.run", return_value=probe):
+            with (
+                patch("history_reels.verification.subprocess.run", return_value=probe),
+                patch(
+                    "history_reels.verification.inspect_rendered_video",
+                    return_value={"passed": True, "sample_count": 3, "failed_samples": 0},
+                ),
+            ):
                 report = verify_deliverable(job)
             self.assertTrue(report["passed"])
             self.assertEqual(report["audio_sample_rate"], 48_000)
+            self.assertTrue(report["visual_qa"]["passed"])
             self.assertTrue(Path(job.VERIFICATION_REPORT_PATH).is_file())
 
     def test_rejects_private_urls_and_invalid_upload_signatures(self):
@@ -180,7 +198,7 @@ class TestHistoryReels(unittest.TestCase):
             self.assertFalse(dashboard_auth_required())
             self.assertTrue(session_key_override_allowed())
 
-    def test_renderer_uses_the_job_transition_snapshot(self):
+    def test_renderer_always_uses_fixed_fade_transition(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             for index in range(1, 5):
                 open(os.path.join(temp_dir, f"raw_clip{index}.jpg"), "wb").close()
@@ -198,7 +216,8 @@ class TestHistoryReels(unittest.TestCase):
                 build_video_frames(job, voice_dur=20.0)
             final_command = run.call_args_list[-1].args[0]
             filter_graph = final_command[final_command.index("-filter_complex") + 1]
-            self.assertIn("transition=slideleft", filter_graph)
+            self.assertIn("transition=fade", filter_graph)
+            self.assertNotIn("transition=slideleft", filter_graph)
 
     def test_renderer_reuses_valid_media_when_some_downloads_fail(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -212,7 +231,6 @@ class TestHistoryReels(unittest.TestCase):
                 VIDEO_WIDTH=720,
                 VIDEO_HEIGHT=1280,
                 FPS=25,
-                VIDEO_TRANSITION="fade",
             )
             with (
                 patch("history_reels.renderer.get_video_dimensions", return_value=(720, 1280)),
@@ -223,6 +241,38 @@ class TestHistoryReels(unittest.TestCase):
             clip_commands = [call.args[0] for call in run.call_args_list[:4]]
             self.assertEqual(job.NUM_CLIPS, 4)
             self.assertTrue(all(source_path in command for command in clip_commands))
+
+    def test_renderer_uses_slide_level_durations_and_matching_fade_offsets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for index in range(1, 4):
+                Path(temp_dir, f"raw_clip{index}.mp4").write_bytes(b"video")
+            job = SimpleNamespace(
+                TOPIC_TEMP_DIR=temp_dir,
+                QUERIES=["one", "two", "three"],
+                SLIDE_TIMINGS=[3.0, 8.0, 12.0],
+                MEDIA_QA_BY_INDEX={},
+                CROSSFADE_DUR=0.5,
+                CLIP_DURATION_TARGET=5.0,
+                VIDEO_WIDTH=720,
+                VIDEO_HEIGHT=1280,
+                FPS=25,
+            )
+            with (
+                patch("history_reels.renderer.get_video_dimensions", return_value=(1280, 720)),
+                patch("history_reels.renderer.run_command") as run,
+            ):
+                build_video_frames(job, voice_dur=12.0)
+
+            clip_commands = [call.args[0] for call in run.call_args_list[:3]]
+            durations = [
+                float(command[command.index("-t") + 1])
+                for command in clip_commands
+            ]
+            self.assertEqual(durations, [3.5, 5.5, 4.0])
+            fade_command = run.call_args_list[-1].args[0]
+            fade_graph = fade_command[fade_command.index("-filter_complex") + 1]
+            self.assertIn("offset=3.000", fade_graph)
+            self.assertIn("offset=8.000", fade_graph)
 
     def test_download_visuals_reports_when_no_usable_media_is_available(self):
         job = SimpleNamespace(QUERIES=["one", "two"], CLIP_DURATION_TARGET=5.0)
@@ -259,15 +309,7 @@ class TestHistoryReels(unittest.TestCase):
                 MUSIC_DIR=temp_dir,
                 BG_MUSIC_VIBE="mystery",
                 BG_MUSIC_TRACK_INDEX=1,
-                AUDIO_DUCKING=False,
-                VOICE_MASTERING=False,
-                TRANSITION_SFX=False,
-                AMBIENT_SOUND=None,
-                CAMERA_SHAKE=False,
-                TRANSITION_OFFSETS=[],
                 COLOR_FILTER=None,
-                CINEMATIC_GRAIN=False,
-                WATERMARK_TEXT="",
                 SHOW_PROGRESS_BAR=False,
                 SHOW_WATERMARK=False,
                 OUTPUT_DIR=temp_dir,
@@ -285,8 +327,11 @@ class TestHistoryReels(unittest.TestCase):
             merge_command = run.call_args_list[-1].args[0]
             merge_filter = merge_command[merge_command.index("-filter_complex") + 1]
             self.assertEqual(audio_command[:4], ["ffmpeg", "-y", "-stream_loop", "-1"])
+            self.assertIn("sidechaincompress=", audio_filter)
+            self.assertIn("acompressor=", audio_filter)
             self.assertIn("loudnorm=I=-16.0:TP=-1.5:LRA=11.0", audio_filter)
             self.assertIn("subtitles=", merge_filter)
+            self.assertEqual(merge_command[merge_command.index("-t") + 1], "12.000")
             subtitles.assert_called_once()
             fontconfig.assert_called_once_with(job)
             # FONTCONFIG_FILE is injected only into the merge subprocess env.
@@ -298,6 +343,47 @@ class TestHistoryReels(unittest.TestCase):
         self.assertIsNotNone(config.TEMP_DIR)
         self.assertIsNotNone(config.OUTPUT_DIR)
         self.assertEqual(config.VOICE_ID, "ur-PK-AsadNeural")
+
+    def test_removed_pipeline_options_are_dropped_from_job_snapshots(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = SimpleNamespace(
+                TEMP_DIR=temp_dir,
+                OUTPUT_DIR=temp_dir,
+                AMBIENT_SOUND="rain",
+                CAMERA_SHAKE=True,
+                CINEMATIC_GRAIN=True,
+                TRANSITION_SFX=True,
+                VOICE_PITCH="+15Hz",
+                TARGET_PLATFORM="TikTok",
+                WATERMARK_TEXT="@legacy",
+                PROGRESS_BAR_COLOR="red",
+                PROGRESS_BAR_HEIGHT=20,
+                CONTENT_NICHE="Technology & AI",
+                VISUAL_STYLE="Cyberpunk",
+                BG_MUSIC_VIBE="random",
+                VIDEO_TRANSITION="pixelize",
+                COLOR_FILTER="cyberpunk",
+            )
+            job = create_generation_job(runtime)
+            for removed_name in (
+                "AMBIENT_SOUND",
+                "CAMERA_SHAKE",
+                "CINEMATIC_GRAIN",
+                "TRANSITION_SFX",
+                "VOICE_PITCH",
+                "TARGET_PLATFORM",
+                "WATERMARK_TEXT",
+                "PROGRESS_BAR_COLOR",
+                "PROGRESS_BAR_HEIGHT",
+                "AUDIO_DUCKING",
+                "VOICE_MASTERING",
+                "CONTENT_NICHE",
+                "VISUAL_STYLE",
+                "VIDEO_TRANSITION",
+            ):
+                self.assertNotIn(removed_name, job.values)
+            self.assertEqual(job.BG_MUSIC_VIBE, "mystery")
+            self.assertIsNone(job.COLOR_FILTER)
 
     def test_default_demo_copy_is_not_history_specific(self):
         self.assertNotIn("baghdad", config.TOPIC_TITLE.lower())
@@ -325,6 +411,28 @@ class TestHistoryReels(unittest.TestCase):
         self.assertEqual([voice["id"] for voice in filter_voices_for_language(voices, "Hindi")], ["hi-IN-MadhurNeural"])
         self.assertEqual([voice["id"] for voice in filter_voices_for_language(voices, "Arabic")], ["ar-SA-HamedNeural"])
 
+    def test_voiceover_target_duration_never_adds_a_silent_final_slide(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            job = SimpleNamespace(
+                TOPIC_TEMP_DIR=temp_dir,
+                NARRATIONS=["پہلا حصہ", "دوسرا حصہ"],
+                VOICE_PROVIDER="edge-tts",
+                VOICE_ID="ur-PK-AsadNeural",
+                TARGET_DURATION=120,
+                job_id="voice-test",
+            )
+            with (
+                patch("history_reels.voiceover.run_command") as run,
+                patch("history_reels.voiceover.get_audio_duration", side_effect=[3.0, 4.0]),
+            ):
+                duration = generate_voiceover(job)
+
+            self.assertEqual(duration, 7.0)
+            self.assertEqual(job.SLIDE_TIMINGS, [3.0, 7.0])
+            self.assertEqual(job.DURATION_SHORTFALL, 113.0)
+            labels = [call.kwargs.get("label") for call in run.call_args_list]
+            self.assertNotIn("voice pad", labels)
+
     def test_local_music_supports_every_dashboard_vibe_without_download_urls(self):
         self.assertEqual(resolve_music_vibe("modern"), "modern")
         self.assertEqual(resolve_music_vibe("unknown"), "mystery")
@@ -333,6 +441,8 @@ class TestHistoryReels(unittest.TestCase):
         self.assertIn("anoisesrc", " ".join(command))
         self.assertEqual(command[-1], "track.mp3")
         self.assertNotEqual(local_track_command("intense", "track.mp3", 1), local_track_command("intense", "track.mp3", 5))
+        self.assertIn(str(MUSIC_TRACK_DURATION_SECONDS), command)
+        self.assertNotIn("afade=", command[command.index("-filter_complex") + 1])
 
     def test_media_quality_prefers_usable_vertical_sources(self):
         job = SimpleNamespace(VIDEO_WIDTH=720, VIDEO_HEIGHT=1280, MIN_MEDIA_DIMENSION=480)
@@ -340,6 +450,154 @@ class TestHistoryReels(unittest.TestCase):
         landscape = media_quality_score(1280, 720, job, duration=12)
         self.assertGreater(vertical, landscape)
         self.assertEqual(media_quality_score(320, 180, job, duration=12), -1)
+
+    def test_media_queries_spread_repeated_concepts_and_candidate_ranking_is_stable(self):
+        queries = [
+            "artificial intelligence technology",
+            "futuristic AI concept",
+            "AI applications in daily life",
+            "AI workplace",
+        ]
+        diversified = diversify_media_queries(queries)
+        self.assertEqual(diversified[0], queries[0])
+        self.assertNotEqual(diversified[1], queries[1])
+        self.assertEqual(len(diversified), len(queries))
+        self.assertTrue(all(value.startswith(original) for value, original in zip(diversified, queries)))
+
+        job = SimpleNamespace(MEDIA_CREATORS_USED={"repeat creator"})
+        top_relevant = media_candidate_score(20, 0, "new creator", job)
+        later_result = media_candidate_score(20, 5, "new creator", job)
+        repeated_creator = media_candidate_score(20, 0, "repeat creator", job)
+        self.assertGreater(top_relevant, later_result)
+        self.assertGreater(top_relevant, repeated_creator)
+        self.assertGreater(
+            media_text_relevance_score("ancient roman aqueduct", "Roman aqueduct ruins in Italy"),
+            media_text_relevance_score("ancient roman aqueduct", "modern office workers"),
+        )
+
+    def test_ai_media_requires_an_ai_anchor_and_blocks_unsafe_gestures(self):
+        job = SimpleNamespace(MIN_MEDIA_RELEVANCE_SCORE=6)
+        self.assertTrue(
+            acceptable_media_metadata(
+                "AI technology in healthcare",
+                "surgeon operating robotic surgery system",
+                job,
+            )
+        )
+        self.assertFalse(
+            acceptable_media_metadata(
+                "AI transforming education",
+                "woman teaching students in classroom",
+                job,
+            )
+        )
+        self.assertFalse(is_safe_media_metadata("person showing a dirty-finger gesture"))
+        self.assertFalse(
+            acceptable_media_metadata(
+                "AI enhancing daily life",
+                "person showing a dirty-finger gesture with prosthetic hand",
+                job,
+            )
+        )
+
+    def test_subject_aware_crop_tracks_focus_without_leaving_source_bounds(self):
+        centred = crop_window(1920, 1080, 9 / 16, 0.5, 0.5)
+        right_focused = crop_window(1920, 1080, 9 / 16, 0.85, 0.5)
+        self.assertEqual(centred[:2], right_focused[:2])
+        self.assertGreater(right_focused[2], centred[2])
+        crop_w, crop_h, x, y = right_focused
+        self.assertLessEqual(x + crop_w, 1920)
+        self.assertLessEqual(y + crop_h, 1080)
+        self.assertEqual((crop_w % 2, crop_h % 2, x % 2, y % 2), (0, 0, 0, 0))
+
+    def test_visual_qa_rejects_blank_and_near_duplicate_frames(self):
+        from PIL import Image, ImageDraw
+
+        blank = inspect_image(Image.new("RGB", (320, 180), "black"))
+        self.assertFalse(blank["passed"])
+        detailed = Image.new("RGB", (320, 180), "white")
+        ImageDraw.Draw(detailed).rectangle((180, 30, 300, 160), fill="navy")
+        first = inspect_image(detailed)
+        duplicate = inspect_image(detailed.copy(), [first["hash"]])
+        self.assertTrue(first["passed"])
+        self.assertFalse(duplicate["passed"])
+        self.assertLessEqual(hash_distance(first["hash"], duplicate["hash"]), 4)
+
+    def test_visual_qa_rejects_a_single_slide_that_consumes_most_of_video(self):
+        failures = _timeline_failures(120.0, [float(value) for value in range(4, 69, 4)] + [120.0])
+        self.assertEqual(len(failures), 1)
+        self.assertIn("prolonged visual repetition", failures[0])
+
+    def test_urdu_caption_overlay_contains_visible_shaped_pixels(self):
+        from PIL import Image
+
+        font_path = Path(__file__).resolve().parents[1] / "assets" / "Jameel Noori Nastaleeq.ttf"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            job = SimpleNamespace(
+                TOPIC_TEMP_DIR=temp_dir,
+                CONTENT_LANGUAGE="Urdu",
+                FONT_PATH=str(font_path),
+                CAPTIONS=["مصنوعی ذہانت ہماری زندگی بدل رہی ہے"],
+                SLIDE_TIMINGS=[2.0],
+                VIDEO_WIDTH=720,
+                VIDEO_HEIGHT=1280,
+                CAPTION_FONT_SIZE=52,
+            )
+            overlays = render_caption_overlays(job)
+            self.assertEqual(len(overlays), 1)
+            with Image.open(overlays[0]["path"]) as image:
+                self.assertIsNotNone(image.getchannel("A").getbbox())
+            self.assertEqual(overlays[0]["start"], 0.0)
+            self.assertEqual(overlays[0]["end"], 2.0)
+
+    def test_mixed_urdu_english_caption_uses_a_latin_capable_fallback(self):
+        from PIL import ImageFont
+
+        primary = ImageFont.truetype(
+            str(Path(__file__).resolve().parents[1] / "assets" / "Jameel Noori Nastaleeq.ttf"),
+            52,
+            layout_engine=ImageFont.Layout.RAQM,
+        )
+        fallback = _load_mixed_script_fallback(ImageFont, SimpleNamespace(), 52)
+        self.assertIs(_font_for_text("مصنوعی ذہانت", primary, fallback), primary)
+        self.assertIs(_font_for_text("AI دنیا بدل رہی ہے", primary, fallback), fallback)
+
+    def test_renderer_uses_timed_raster_overlays_for_urdu(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            font_path = os.path.join(temp_dir, "font.ttf")
+            overlay_path = os.path.join(temp_dir, "caption_overlay_01.png")
+            Path(overlay_path).write_bytes(b"png")
+            job = SimpleNamespace(
+                TOPIC_TEMP_DIR=temp_dir,
+                MUSIC_DIR=temp_dir,
+                BG_MUSIC_VIBE="mystery",
+                BG_MUSIC_TRACK_INDEX=1,
+                COLOR_FILTER=None,
+                SHOW_PROGRESS_BAR=False,
+                SHOW_WATERMARK=False,
+                OUTPUT_DIR=temp_dir,
+                CONTENT_LANGUAGE="Urdu",
+                FONT_PATH=font_path,
+                FPS=25,
+            )
+            overlays = [{"path": overlay_path, "start": 0.0, "end": 4.0, "y": 500}]
+            with (
+                patch("history_reels.renderer.run_command") as run,
+                patch("history_reels.renderer.render_caption_overlays", return_value=overlays),
+                patch("history_reels.renderer.write_ass_subtitles") as ass_writer,
+                patch("history_reels.renderer.setup_fontconfig") as fontconfig,
+            ):
+                run_ffmpeg(job, voice_dur=4.0)
+
+            merge_call = run.call_args_list[-1]
+            merge_command = merge_call.args[0]
+            merge_filter = merge_command[merge_command.index("-filter_complex") + 1]
+            self.assertIn("overlay=0:500:enable='between(t,0.000,4.000)'", merge_filter)
+            self.assertNotIn("subtitles=", merge_filter)
+            self.assertIn(overlay_path, merge_command)
+            self.assertIsNone(merge_call.kwargs["env"])
+            ass_writer.assert_not_called()
+            fontconfig.assert_not_called()
 
     def test_language_font_preset_and_ass_caption_style_are_applied(self):
         self.assertEqual(get_font_preset("Noto Sans Devanagari")["family"], "Noto Sans Devanagari")
@@ -376,22 +634,19 @@ class TestHistoryReels(unittest.TestCase):
         settings = SimpleNamespace(
             GROQ_API_KEY="test-key",
             TARGET_DURATION=30,
-            CONTENT_NICHE="Education & Learning",
             CONTENT_LANGUAGE="English",
             CONTENT_TONE="Educational",
-            TARGET_PLATFORM="YouTube Shorts",
-            VISUAL_STYLE="Clean & Minimal",
         )
         with patch("history_reels.script_generator.requests.post", return_value=response) as post:
             result = fetch_ai_script("How to study effectively", provider="groq", settings=settings)
 
         prompt = post.call_args.kwargs["json"]["messages"][0]["content"]
         self.assertEqual(result["title"], "Smart Study Habits")
-        self.assertIn("Niche: Education & Learning", prompt)
+        self.assertNotIn("Niche:", prompt)
         self.assertIn("Content language: English", prompt)
         self.assertIn("Tone: Educational", prompt)
-        self.assertIn("Target platform: YouTube Shorts", prompt)
-        self.assertIn("Visual style: Clean & Minimal", prompt)
+        self.assertNotIn("Target platform:", prompt)
+        self.assertNotIn("Visual style:", prompt)
 
     def test_raw_script_prompt_preserves_source_language_without_conflicting_instruction(self):
         response_data = {
@@ -403,8 +658,8 @@ class TestHistoryReels(unittest.TestCase):
         response = unittest.mock.MagicMock()
         response.json.return_value = {"choices": [{"message": {"content": __import__("json").dumps(response_data)}}]}
         settings = SimpleNamespace(
-            GROQ_API_KEY="test-key", TARGET_DURATION=30, CONTENT_NICHE="General", CONTENT_LANGUAGE="English",
-            CONTENT_TONE="Clear", TARGET_PLATFORM="Instagram Reels", VISUAL_STYLE="Cinematic",
+            GROQ_API_KEY="test-key", TARGET_DURATION=30, CONTENT_LANGUAGE="English",
+            CONTENT_TONE="Clear",
         )
         with patch("history_reels.script_generator.requests.post", return_value=response) as post:
             fetch_ai_script("Texto original", provider="groq", is_raw_script=True, settings=settings)
@@ -437,6 +692,7 @@ class TestHistoryReels(unittest.TestCase):
             bg_music_vibe="invalid_vibe",
             captions=["caption"],
             narrations=["narration"],
+            queries=["topic close up"],
         )
         self.assertEqual(model.bg_music_vibe, "mystery")
 
@@ -447,7 +703,7 @@ class TestHistoryReels(unittest.TestCase):
             queries=["q1", "q2", "q3", "q4", "q5", "q6", "q7"],
         )
         self.assertEqual(len(model.queries), 8)
-        self.assertEqual(model.queries[-1], "cinematic")
+        self.assertEqual(model.queries[-1], "q1 wide establishing shot")
 
     def test_script_validation_rejects_missing_or_misaligned_slides(self):
         with self.assertRaises(ValueError):
@@ -652,7 +908,7 @@ class TestHistoryReels(unittest.TestCase):
         calls = []
 
         def successful_runner(topic, provider, manual_script_data, is_raw_script, job):
-            calls.append((topic, provider, manual_script_data, is_raw_script, job.job_id, job.VIDEO_TRANSITION))
+            calls.append((topic, provider, manual_script_data, is_raw_script, job.job_id, job.CLIP_DURATION_TARGET))
             job.OUTPUT_NAME = "Queued Reel"
             job.history_store.mark_running(job.job_id)
             job.history_store.mark_succeeded(job)
@@ -663,7 +919,7 @@ class TestHistoryReels(unittest.TestCase):
             runtime = SimpleNamespace(
                 TEMP_DIR=temp_dir,
                 OUTPUT_DIR=temp_dir,
-                VIDEO_TRANSITION="slideleft",
+                CLIP_DURATION_TARGET=3.0,
                 OPENAI_API_KEY="must-not-be-persisted",
             )
             manager = JobManager(runner=successful_runner)
@@ -675,15 +931,15 @@ class TestHistoryReels(unittest.TestCase):
             self.assertEqual(saved["topic"], "Titanic")
             self.assertEqual(saved["provider"], "auto")
             stored_record = JobStore(temp_dir).get_job(first_id)
-            self.assertEqual(stored_record["settings_json"]["VIDEO_TRANSITION"], "slideleft")
+            self.assertEqual(stored_record["settings_json"]["CLIP_DURATION_TARGET"], 3.0)
             self.assertNotIn("OPENAI_API_KEY", stored_record["settings_json"])
 
-            runtime.VIDEO_TRANSITION = "fade"
+            runtime.CLIP_DURATION_TARGET = 7.0
             retry_id = manager.retry(temp_dir, runtime, first_id)
             self.assertIsNotNone(retry_id)
             manager._futures[retry_id].result(timeout=5)
             self.assertEqual(len(calls), 2)
-            self.assertEqual(calls[1][-1], "slideleft")
+            self.assertEqual(calls[1][-1], 3.0)
             records = JobStore(temp_dir).list_jobs(limit=2)
             retry_record = next(record for record in records if record["job_id"] == retry_id)
             self.assertEqual(retry_record["retry_of"], first_id)
@@ -820,7 +1076,7 @@ class TestHistoryReels(unittest.TestCase):
             runtime = SimpleNamespace(
                 TEMP_DIR=temp_dir,
                 OUTPUT_DIR=temp_dir,
-                VIDEO_TRANSITION="wipeleft",
+                CLIP_DURATION_TARGET=3.0,
                 MAX_JOB_ATTEMPTS=2,
             )
             store = JobStore(temp_dir)
@@ -836,7 +1092,7 @@ class TestHistoryReels(unittest.TestCase):
             captured = []
 
             def transient_failure(topic, provider, manual_script_data, is_raw_script, job):
-                captured.append(job.VIDEO_TRANSITION)
+                captured.append(job.CLIP_DURATION_TARGET)
                 job.status = "failed"
                 job.last_error = "Network timeout"
                 job.history_store.mark_failed(job, job.last_error)
@@ -848,7 +1104,7 @@ class TestHistoryReels(unittest.TestCase):
             ):
                 self.assertFalse(run_job(temp_dir, job.job_id))
 
-            self.assertEqual(captured, ["wipeleft"])
+            self.assertEqual(captured, [3.0])
             retries = [record for record in store.list_jobs(limit=5) if record["job_id"] != job.job_id]
             self.assertEqual(len(retries), 1)
             self.assertEqual(retries[0]["attempt"], 2)
@@ -911,15 +1167,7 @@ class TestHistoryReels(unittest.TestCase):
                 MUSIC_DIR=temp_dir,
                 BG_MUSIC_VIBE="mystery",
                 BG_MUSIC_TRACK_INDEX=1,
-                AUDIO_DUCKING=False,
-                VOICE_MASTERING=False,
-                TRANSITION_SFX=False,
-                AMBIENT_SOUND=None,
-                CAMERA_SHAKE=False,
-                TRANSITION_OFFSETS=[],
                 COLOR_FILTER=None,
-                CINEMATIC_GRAIN=False,
-                WATERMARK_TEXT="",
                 SHOW_PROGRESS_BAR=False,
                 SHOW_WATERMARK=True,
                 WATERMARK_PATH=logo_path,

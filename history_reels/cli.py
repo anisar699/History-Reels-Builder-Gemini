@@ -16,12 +16,16 @@ from history_reels.music_library import ensure_local_music_track
 from history_reels.jobs import GenerationJob, create_generation_job
 from history_reels.job_store import JobCancelledError, JobStore
 from history_reels.script_generator import fetch_ai_script
-from history_reels.script_generator import fetch_ai_script
-from history_reels.stock_media import download_clip_for_query
+from history_reels.stock_media import diversify_media_queries, download_clip_for_query
 from history_reels.voiceover import generate_voiceover
 from history_reels.renderer import build_video_frames, run_ffmpeg
 from history_reels.seo import write_seo_package
 from history_reels.verification import verify_deliverable
+from history_reels.visual_quality import (
+    find_raw_media_path,
+    inspect_media,
+    remove_raw_media,
+)
 
 def download_file(url, path):
     try:
@@ -46,7 +50,7 @@ def ensure_assets(job: GenerationJob):
     # preserved instead of being overwritten by a default font path.
     prepare_caption_font(job, download_file)
     # 2. Provision the selected reusable local original track.
-    ensure_local_music_track(job)
+    job.MUSIC_PATH = ensure_local_music_track(job)
 
 def check_inputs(job: GenerationJob):
     os.makedirs(job.TOPIC_TEMP_DIR, exist_ok=True)
@@ -77,8 +81,8 @@ def check_inputs(job: GenerationJob):
         print(f"Error: Caption font not found or invalid at {job.FONT_PATH}")
         return False
         
-    music_mp3 = os.path.join(job.MUSIC_DIR, f"{job.BG_MUSIC_VIBE}_{job.BG_MUSIC_TRACK_INDEX}.mp3")
-    if not os.path.exists(music_mp3):
+    music_mp3 = str(getattr(job, "MUSIC_PATH", "") or "")
+    if not music_mp3 or not os.path.exists(music_mp3):
         print("Error: Local background music track could not be created.")
         return False
 
@@ -89,34 +93,84 @@ def download_visuals(job: GenerationJob, voice_dur):
     pacing = getattr(job, "CLIP_DURATION_TARGET", 5.0)
     
     import math
-    required_clips = math.ceil(voice_dur / max(pacing, 0.1))
+    slide_timings = list(getattr(job, "SLIDE_TIMINGS", []) or [])
+    required_clips = len(slide_timings) or math.ceil(voice_dur / max(pacing, 0.1))
     
+    diverse_queries = diversify_media_queries(job.QUERIES)
     expanded_queries = []
     while len(expanded_queries) < required_clips:
-        if not job.QUERIES:
+        if not diverse_queries:
             break
-        expanded_queries.extend(job.QUERIES)
+        expanded_queries.extend(diverse_queries)
     job.QUERIES = expanded_queries[:required_clips]
     
-    clip_idx = 1
-    successful_queries = []
-    for q in job.QUERIES:
-        if download_clip_for_query(q, clip_idx, job):
-            successful_queries.append(q)
-            clip_idx += 1
-        else:
-            print(f"Warning: Could not retrieve video clip for query '{q}'")
-    if not successful_queries:
+    job.MEDIA_QA_REPORTS = []
+    job.MEDIA_QA_BY_INDEX = {}
+    accepted_hashes = []
+    successful_indices = []
+    temp_dir = str(getattr(job, "TOPIC_TEMP_DIR", "") or "")
+    for clip_idx, query in enumerate(job.QUERIES, start=1):
+        accepted = False
+        for attempt in range(1, 3):
+            if temp_dir:
+                remove_raw_media(temp_dir, clip_idx)
+            if not download_clip_for_query(query, clip_idx, job):
+                continue
+            media_path = find_raw_media_path(temp_dir, clip_idx) if temp_dir else None
+            if not media_path:
+                continue
+            report = inspect_media(media_path, accepted_hashes)
+            report.update({"index": clip_idx, "query": query, "attempt": attempt})
+            job.MEDIA_QA_REPORTS.append(report)
+            if report.get("passed"):
+                job.MEDIA_QA_BY_INDEX[clip_idx] = report
+                if report.get("hash"):
+                    accepted_hashes.append(report["hash"])
+                successful_indices.append(clip_idx)
+                accepted = True
+                break
+            print(
+                f"Visual {clip_idx} rejected by QA ({'; '.join(report.get('failures', []))}); "
+                "trying a different result."
+            )
+            remove_raw_media(temp_dir, clip_idx)
+        if not accepted:
+            print(f"Warning: Could not retrieve a distinct usable visual for query '{query}'")
+
+    if not successful_indices:
         raise RuntimeError(
             "No usable media could be downloaded from the selected sources. "
             "Check media-source keys or choose another source profile and retry."
         )
-    if len(successful_queries) < required_clips:
+
+    # Preserve narration-to-slide alignment even when a provider has a gap.
+    # Reusing the nearest inspected visual is preferable to shifting every
+    # subsequent query into the wrong narration segment.
+    for missing_index in range(1, required_clips + 1):
+        if missing_index in successful_indices:
+            continue
+        source_index = min(successful_indices, key=lambda value: abs(value - missing_index))
+        source_path = find_raw_media_path(job.TOPIC_TEMP_DIR, source_index)
+        if not source_path:
+            continue
+        extension = os.path.splitext(source_path)[1]
+        target_path = os.path.join(job.TOPIC_TEMP_DIR, f"raw_clip{missing_index}{extension}")
+        shutil.copy2(source_path, target_path)
+        reused_report = dict(job.MEDIA_QA_BY_INDEX.get(source_index, {}))
+        reused_report.update({
+            "index": missing_index,
+            "query": job.QUERIES[missing_index - 1],
+            "reused_from": source_index,
+            "warnings": list(reused_report.get("warnings", []))
+            + [f"provider gap: reused visual {source_index}"],
+        })
+        job.MEDIA_QA_BY_INDEX[missing_index] = reused_report
+
+    if len(successful_indices) < required_clips:
         print(
-            f"Warning: Retrieved {len(successful_queries)}/{required_clips} media assets. "
-            "The renderer will reuse valid assets instead of producing blank frames."
+            f"Warning: Retrieved {len(successful_indices)}/{required_clips} distinct media assets. "
+            "Missing slide slots use the nearest QA-approved visual."
         )
-    job.QUERIES = successful_queries
 
 def copy_deliverables(job: GenerationJob):
     final_video = job.video_path

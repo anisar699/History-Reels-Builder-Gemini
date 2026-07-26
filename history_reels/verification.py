@@ -10,6 +10,7 @@ from typing import Any
 
 from history_reels.font_manager import font_options_for_language, get_font_preset
 from history_reels.music_library import MUSIC_VIBES, resolve_music_vibe
+from history_reels.visual_quality import inspect_rendered_video
 
 
 VERIFICATION_MATRIX = (
@@ -85,6 +86,21 @@ def verify_deliverable(job: Any) -> dict[str, Any]:
     if int(audio_stream.get("channels") or 0) < 1:
         raise RuntimeError("Verification failed: final audio stream has no usable channels.")
 
+    visual_qa = inspect_rendered_video(
+        str(video_path),
+        duration,
+        getattr(job, "SLIDE_TIMINGS", None),
+    )
+    if not visual_qa.get("passed"):
+        timeline_failures = visual_qa.get("timeline_failures", [])
+        detail = "; ".join(timeline_failures) if timeline_failures else (
+            f"{visual_qa.get('failed_samples', 0)} failed frame sample(s)"
+        )
+        raise RuntimeError(
+            "Verification failed: final visual QA detected a blank/unreadable frame "
+            f"or a timing/repetition problem ({detail})."
+        )
+
     report = {
         "verified_at": datetime.now(timezone.utc).isoformat(),
         "passed": True,
@@ -101,6 +117,8 @@ def verify_deliverable(job: Any) -> dict[str, Any]:
         "audio_codec": audio_stream.get("codec_name"),
         "audio_sample_rate": int(audio_stream.get("sample_rate") or 0),
         "audio_channels": int(audio_stream.get("channels") or 0),
+        "visual_qa": visual_qa,
+        "source_media_qa": list(getattr(job, "MEDIA_QA_REPORTS", []) or []),
         "job_settings": {
             "language": getattr(job, "CONTENT_LANGUAGE", "Urdu"),
             "caption_font": getattr(job, "CAPTION_FONT_FAMILY", ""),

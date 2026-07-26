@@ -1,6 +1,5 @@
 import os
 import requests
-import random
 import time
 import re
 import json
@@ -77,6 +76,189 @@ def accept_downloaded_image(path: str, job: GenerationJob) -> bool:
             pass
         return False
     return True
+
+_GENERIC_QUERY_WORDS = {
+    "cinematic", "concept", "footage", "futuristic", "image",
+    "scene", "stock", "technology", "video",
+}
+_QUERY_STOP_WORDS = {
+    "a", "an", "and", "at", "by", "for", "from", "in", "into", "of",
+    "on", "or", "the", "to", "with",
+}
+_SHOT_VARIANTS = (
+    "wide environment",
+    "human interaction",
+    "close up detail",
+    "real world activity",
+    "equipment and objects",
+)
+_RELEVANCE_SYNONYMS = {
+    "ai": "ai",
+    "automation": "ai",
+    "automated": "ai",
+    "chatbot": "ai",
+    "chatgpt": "ai",
+    "deepmind": "ai",
+    "intelligence": "ai",
+    "machine": "ai",
+    "robot": "ai",
+    "robotic": "ai",
+    "robots": "ai",
+    "smart": "ai",
+    "healthcare": "health",
+    "hospital": "health",
+    "medical": "health",
+    "surgeon": "health",
+    "surgery": "health",
+    "education": "education",
+    "learning": "education",
+    "student": "education",
+    "students": "education",
+    "studying": "education",
+    "teacher": "education",
+    "cooking": "cooking",
+    "food": "cooking",
+    "kitchen": "cooking",
+    "exercise": "fitness",
+    "fitness": "fitness",
+    "gym": "fitness",
+    "car": "transport",
+    "cars": "transport",
+    "highway": "transport",
+    "traffic": "transport",
+    "transportation": "transport",
+    "vehicle": "transport",
+    "vehicles": "transport",
+    "artist": "creative",
+    "artistic": "creative",
+    "arts": "creative",
+    "creative": "creative",
+    "research": "research",
+    "science": "research",
+    "scientist": "research",
+    "service": "service",
+    "support": "service",
+}
+_UNSAFE_MEDIA_PHRASES = {
+    "dirty finger",
+    "middle finger",
+    "obscene gesture",
+    "explicit nudity",
+    "gore",
+    "porn",
+}
+
+
+def _query_fingerprint(query: str) -> set[str]:
+    text = re.sub(r"\bartificial intelligence\b", " ai ", str(query).lower())
+    tokens = re.findall(r"[a-z0-9]+", text)
+    normalized = []
+    for token in tokens:
+        if token in _GENERIC_QUERY_WORDS:
+            continue
+        if token in {"robotics", "robotic", "robots"}:
+            token = "robot"
+        normalized.append(token)
+    return set(normalized)
+
+
+def diversify_media_queries(queries: list[str]) -> list[str]:
+    """Keep slide order while giving repeated concepts different shot intent."""
+    output = []
+    seen: list[set[str]] = []
+    variant_index = 0
+    for raw_query in queries or []:
+        query = str(raw_query).strip()
+        if not query:
+            continue
+        fingerprint = _query_fingerprint(query)
+        similarity = 0.0
+        for previous in seen:
+            union = fingerprint | previous
+            similarity = max(similarity, len(fingerprint & previous) / len(union) if union else 1.0)
+        if similarity >= 0.34:
+            query = f"{query} {_SHOT_VARIANTS[variant_index % len(_SHOT_VARIANTS)]}"
+            variant_index += 1
+        output.append(query)
+        seen.append(fingerprint)
+    return output
+
+
+def media_text_relevance_score(query: str, metadata: str) -> int:
+    """Score how directly provider metadata describes the requested subject."""
+    query_text = re.sub(r"\bartificial intelligence\b", " ai ", str(query).lower())
+    metadata_text = re.sub(r"\bartificial intelligence\b", " ai ", str(metadata).lower())
+    raw_query_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", query_text)
+        if token not in _GENERIC_QUERY_WORDS and token not in _QUERY_STOP_WORDS
+    }
+    raw_metadata_tokens = set(re.findall(r"[a-z0-9]+", metadata_text))
+    query_tokens = {_RELEVANCE_SYNONYMS.get(token, token) for token in raw_query_tokens}
+    metadata_tokens = {_RELEVANCE_SYNONYMS.get(token, token) for token in raw_metadata_tokens}
+    if not query_tokens or not metadata_tokens:
+        return 0
+    overlap = len(query_tokens & metadata_tokens)
+    coverage = overlap / len(query_tokens)
+    phrase_bonus = 6 if query_text.strip() and query_text.strip() in metadata_text else 0
+    score = min(30, int(round(coverage * 24)) + phrase_bonus)
+    # "AI teacher", "AI cooking", etc. must visibly describe AI, not merely
+    # the secondary activity. This prevents generic lifestyle footage from
+    # winning on resolution alone.
+    if "ai" in query_tokens and "ai" not in metadata_tokens:
+        score = min(score, 3)
+    return score
+
+
+def minimum_media_relevance_score(job: GenerationJob) -> int:
+    try:
+        return max(0, int(getattr(job, "MIN_MEDIA_RELEVANCE_SCORE", 6) or 6))
+    except (TypeError, ValueError):
+        return 6
+
+
+def is_safe_media_metadata(metadata: str) -> bool:
+    normalized = re.sub(r"[_-]+", " ", str(metadata or "").lower())
+    return not any(phrase in normalized for phrase in _UNSAFE_MEDIA_PHRASES)
+
+
+def acceptable_media_metadata(query: str, metadata: str, job: GenerationJob) -> bool:
+    return (
+        is_safe_media_metadata(metadata)
+        and media_text_relevance_score(query, metadata) >= minimum_media_relevance_score(job)
+    )
+
+
+def media_candidate_score(
+    quality_score,
+    result_index,
+    creator,
+    job: GenerationJob,
+    query: str = "",
+    metadata: str = "",
+) -> int:
+    """Combine crop quality, provider relevance order, and creator variety."""
+    relevance_bonus = max(0, 18 - (int(result_index) * 2))
+    metadata_relevance = media_text_relevance_score(query, metadata)
+    used_creators = getattr(job, "MEDIA_CREATORS_USED", None)
+    if not isinstance(used_creators, set):
+        used_creators = set()
+        job.MEDIA_CREATORS_USED = used_creators
+    creator_key = str(creator or "").strip().casefold()
+    repeat_penalty = 10 if creator_key and creator_key in used_creators else 0
+    return int(quality_score) + relevance_bonus + metadata_relevance - repeat_penalty
+
+
+def _remember_media_creator(job: GenerationJob, creator) -> None:
+    creator_key = str(creator or "").strip().casefold()
+    if not creator_key:
+        return
+    used_creators = getattr(job, "MEDIA_CREATORS_USED", None)
+    if not isinstance(used_creators, set):
+        used_creators = set()
+        job.MEDIA_CREATORS_USED = used_creators
+    used_creators.add(creator_key)
+
 
 def download_file_with_retry(url, path, max_attempts=2):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
@@ -234,8 +416,23 @@ def download_clip_for_query(query, index, job: GenerationJob):
                 if r.status_code == 200:
                     results = r.json().get("results", [])
                     results = [r_item for r_item in results if str(r_item.get('id')) not in getattr(job, "DOWNLOADED_VIDEO_IDS", set())]
+                    results = [
+                        result
+                        for result in results
+                        if acceptable_media_metadata(
+                            query,
+                            f"{result.get('title', '')} {result.get('description', '')}",
+                            job,
+                        )
+                    ]
                     if results:
-                        item = results[0]
+                        item = max(
+                            results,
+                            key=lambda result: media_text_relevance_score(
+                                query,
+                                f"{result.get('title', '')} {result.get('description', '')}",
+                            ),
+                        )
                         preview_url = item.get("preview_url")
                         if preview_url and download_file_with_retry(preview_url, save_path):
                             getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(str(item.get('id')))
@@ -254,18 +451,25 @@ def download_clip_for_query(query, index, job: GenerationJob):
                 if r.status_code == 200:
                     videos = r.json().get("videos", [])
                     candidates = []
-                    for v in videos:
+                    for result_index, v in enumerate(videos):
                         v_id = str(v.get("id"))
                         v_dur = (v.get("duration") or 0)
                         width = v.get("width", 1)
                         height = v.get("height", 1)
-                        score = media_quality_score(width, height, job, v_dur)
-                        if v_id in getattr(job, "DOWNLOADED_VIDEO_IDS", set()) or v_dur < 5 or score < 0:
+                        quality_score = media_quality_score(width, height, job, v_dur)
+                        if v_id in getattr(job, "DOWNLOADED_VIDEO_IDS", set()) or v_dur < 5 or quality_score < 0:
                             continue
-                        candidates.append((score, v))
+                        creator = (v.get("user") or {}).get("name", "")
+                        metadata = f"{v.get('url', '')} {v.get('title', '')} {v.get('description', '')}"
+                        if not acceptable_media_metadata(query, metadata, job):
+                            continue
+                        score = media_candidate_score(
+                            quality_score, result_index, creator, job, query, metadata
+                        )
+                        candidates.append((score, result_index, v))
                     if candidates:
-                        candidates.sort(key=lambda x: x[0], reverse=True)
-                        selected_score, selected_v = random.choice(candidates[:min(3, len(candidates))])
+                        candidates.sort(key=lambda item: (-item[0], item[1]))
+                        _, _, selected_v = candidates[0]
                         video_files = selected_v.get("video_files", [])
                         video_files = [vf for vf in video_files if media_quality_score(vf.get("width"), vf.get("height"), job, selected_v.get("duration", 0)) >= 0]
                         link = next((vf.get("link") for vf in video_files if vf.get("width") in [720, 1080]), None)
@@ -273,6 +477,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                         if link and download_file_with_retry(link, save_path):
                             getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(str(selected_v.get("id")))
                             user_info = selected_v.get("user", {})
+                            _remember_media_creator(job, user_info.get("name", ""))
                             job.VIDEO_ATTRIBUTIONS.append(f"Pexels Video by {user_info.get('name', 'Unknown')} ({selected_v.get('url', '')})")
                             _report_media_event(job, f"Visual {index}: Pexels video downloaded.")
                             return True
@@ -286,11 +491,36 @@ def download_clip_for_query(query, index, job: GenerationJob):
                 r = requests.get(url, timeout=15)
                 if r.status_code == 200:
                     hits = r.json().get("hits", [])
-                    candidates = [h for h in hits if str(h.get("id")) not in getattr(job, "DOWNLOADED_VIDEO_IDS", set()) and (h.get("duration") or 0) >= 5]
-                    candidates = [h for h in candidates if any(media_quality_score(v.get("width"), v.get("height"), job, (h.get("duration") or 0)) >= 0 for v in (h.get("videos") or {}).values())]
+                    candidates = []
+                    for result_index, hit in enumerate(hits):
+                        if str(hit.get("id")) in getattr(job, "DOWNLOADED_VIDEO_IDS", set()) or (hit.get("duration") or 0) < 5:
+                            continue
+                        quality_scores = [
+                            media_quality_score(
+                                video.get("width"),
+                                video.get("height"),
+                                job,
+                                hit.get("duration") or 0,
+                            )
+                            for video in (hit.get("videos") or {}).values()
+                        ]
+                        usable_scores = [score for score in quality_scores if score >= 0]
+                        if not usable_scores:
+                            continue
+                        if not acceptable_media_metadata(query, hit.get("tags", ""), job):
+                            continue
+                        score = media_candidate_score(
+                            max(usable_scores),
+                            result_index,
+                            hit.get("user", ""),
+                            job,
+                            query,
+                            hit.get("tags", ""),
+                        )
+                        candidates.append((score, result_index, hit))
                     if candidates:
-                        candidates.sort(key=lambda h: max(media_quality_score(v.get("width"), v.get("height"), job, (h.get("duration") or 0)) for v in (h.get("videos") or {}).values()), reverse=True)
-                        selected_h = random.choice(candidates[:min(3, len(candidates))])
+                        candidates.sort(key=lambda item: (-item[0], item[1]))
+                        _, _, selected_h = candidates[0]
                         videos = selected_h.get("videos") or {}
                         candidates_by_quality = [v for v in videos.values() if media_quality_score(v.get("width"), v.get("height"), job, (selected_h.get("duration") or 0)) >= 0]
                         candidates_by_quality.sort(key=lambda v: media_quality_score(v.get("width"), v.get("height"), job, (selected_h.get("duration") or 0)), reverse=True)
@@ -298,6 +528,7 @@ def download_clip_for_query(query, index, job: GenerationJob):
                         link = video_obj.get("url") if video_obj else None
                         if link and download_file_with_retry(link, save_path):
                             getattr(job, "DOWNLOADED_VIDEO_IDS", set()).add(str(selected_h.get("id")))
+                            _remember_media_creator(job, selected_h.get("user", ""))
                             job.VIDEO_ATTRIBUTIONS.append(f"Pixabay Video by {selected_h.get('user', 'Unknown')} (ID: {selected_h.get('id')})")
                             _report_media_event(job, f"Visual {index}: Pixabay video downloaded.")
                             return True
@@ -345,8 +576,15 @@ def download_clip_for_query(query, index, job: GenerationJob):
             try:
                 r = requests.get(url, headers=headers, timeout=15)
                 pages = r.json().get("query", {}).get("pages", {})
-                for page_id, page_data in pages.items():
+                ranked_pages = sorted(
+                    pages.items(),
+                    key=lambda item: media_text_relevance_score(query, item[1].get("title", "")),
+                    reverse=True,
+                )
+                for page_id, page_data in ranked_pages:
                     info = page_data.get("imageinfo", [])
+                    if not acceptable_media_metadata(query, page_data.get("title", ""), job):
+                        continue
                     if info:
                         img_url = info[0].get("url")
                         if img_url and img_url.lower().endswith(('.jpg', '.jpeg', '.png')):
@@ -371,7 +609,31 @@ def download_clip_for_query(query, index, job: GenerationJob):
                 try:
                     r = requests.get(url, headers=headers, timeout=15)
                     results = r.json().get("results", [])
+                    results.sort(
+                        key=lambda item: media_text_relevance_score(
+                            query,
+                            " ".join(
+                                str(value or "")
+                                for value in (
+                                    item.get("description"),
+                                    item.get("alt_description"),
+                                    " ".join(tag.get("title", "") for tag in item.get("tags", [])),
+                                )
+                            ),
+                        ),
+                        reverse=True,
+                    )
                     for item in results:
+                        metadata = " ".join(
+                            str(value or "")
+                            for value in (
+                                item.get("description"),
+                                item.get("alt_description"),
+                                " ".join(tag.get("title", "") for tag in item.get("tags", [])),
+                            )
+                        )
+                        if not acceptable_media_metadata(query, metadata, job):
+                            continue
                         img_url = (item.get("urls") or {}).get("regular")
                         if img_url:
                             if img_url in getattr(job, "DOWNLOADED_VIDEO_IDS", set()):
@@ -396,6 +658,10 @@ def download_clip_for_query(query, index, job: GenerationJob):
                 r = requests.get(url, timeout=15)
                 items = r.json().get("collection", {}).get("items", [])
                 for item in items[:10]:
+                    item_data = (item.get("data") or [{}])[0]
+                    metadata = f"{item_data.get('title', '')} {item_data.get('description', '')} {item_data.get('keywords', '')}"
+                    if not acceptable_media_metadata(query, metadata, job):
+                        continue
                     links = item.get("links", [])
                     if links:
                         img_url = links[0].get("href")
@@ -418,7 +684,13 @@ def download_clip_for_query(query, index, job: GenerationJob):
             try:
                 r = requests.get(url, timeout=15)
                 docs = r.json().get("response", {}).get("docs", [])
+                docs.sort(
+                    key=lambda doc: media_text_relevance_score(query, doc.get("title", "")),
+                    reverse=True,
+                )
                 for doc in docs:
+                    if not acceptable_media_metadata(query, doc.get("title", ""), job):
+                        continue
                     identifier = doc.get("identifier")
                     if identifier:
                         meta_url = f"https://archive.org/metadata/{identifier}"
@@ -443,9 +715,15 @@ def download_clip_for_query(query, index, job: GenerationJob):
             except Exception as e:
                 print(f"Internet Archive query failed: {_safe_error_message(e)}")
 
-    # Ultimate fallback
-    if query != "cinematic":
-        print(f"Query '{query}' failed across all providers. Trying ultimate fallback 'cinematic'...")
-        return download_clip_for_query("cinematic", index, job)
+    # Keep fallback results tied to the requested subject. A bare "cinematic"
+    # fallback frequently returned attractive but unrelated footage.
+    fallback_suffix = "documentary footage"
+    if not str(query).strip().lower().endswith(fallback_suffix):
+        fallback_query = f"{str(query).strip()} {fallback_suffix}".strip()
+        print(
+            f"Query '{query}' failed across all providers. "
+            f"Trying subject-preserving fallback '{fallback_query}'..."
+        )
+        return download_clip_for_query(fallback_query, index, job)
 
     return False

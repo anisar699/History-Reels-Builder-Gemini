@@ -9,20 +9,21 @@ Now upgraded to a **Fully Dynamic System** supporting videos up to 10 minutes lo
 ## 🌟 What's New in V2.0 (The Universal Update)
 
 * **Ultimate Auto Fallback AI Engine:** Never hit an API limit again! Select the "Auto Fallback" provider to seamlessly try Google Gemini -> OpenAI -> Local Ollama -> OpenRouter -> Groq sequentially. If one fails, the next takes over instantly.
-* **Checkbox-based Media Sources UI:** Visually select your allowed stock media platforms (Pexels, Pixabay, etc.) using clean checkboxes directly from the new Visuals & Transitions panel.
-* **Dynamic Scripts & Pacing:** No more 4-slide limits! Generate 3 to 10-minute long videos effortlessly. The AI mathematically calculates slides, subtitles, and queries based on your target duration.
-* **Creative Direction Controls:** Set a niche, content language, tone, target platform, and visual style for every AI-generated reel. These choices are stored with each queued job and reused on retries.
+* **Media Sources UI:** Select standard stock platforms in the Visuals panel; specialized providers live under Advanced media sources.
+* **Dynamic Scripts & Pacing:** No more 4-slide limits. The target duration guides script length, while the final render follows the natural narration duration instead of adding a silent tail.
+* **Focused Creative Controls:** Set content language and tone while the entered topic supplies the subject and visual context.
 * **Language-Aware Captions:** Urdu, English, Hindi, Arabic, and Roman Urdu each use an appropriate caption font. You can also upload a `.ttf` or `.otf` font; the render pipeline preserves and burns that exact uploaded font.
-* **Local-First Music + Media Quality:** Every music vibe uses a reusable original FFmpeg-generated local track instead of a fragile download URL. A balanced/high-quality source filter rejects undersized video candidates before download.
+* **Local-First Music + Media Quality:** Every music vibe uses a reusable, layered 11-minute FFmpeg-generated score instead of a fragile download URL. Resolution, subject-anchor relevance, safe metadata, creator variety, blank-frame checks, and perceptual duplicate detection rank or reject source media before rendering.
 * **Reliable Render Queue:** Every job has a durable local status, stage, event log, retry action, and cancellation checkpoints. Interrupted queued jobs become clearly retryable instead of remaining stuck forever.
-* **Verified Deliverables:** A no-network matrix covers Urdu, English, Hindi, Arabic, Roman Urdu, vertical/landscape/square layouts, music modes, and media-quality profiles. Every completed render is also checked with FFprobe before it is marked ready.
-* **Categorized UI Dashboard:** Generator settings are cleanly organized into 5 expandable accordions (AI Models, Audio & Voice, Visuals & Transitions, Branding & Overlays, API Keys).
-* **Cinematic Visual Effects:** Added support for Color Grading LUTs (Cyberpunk, Vintage, Horror), Cinematic Film Grain, and high-energy Camera Shake transitions.
-* **Pro Audio Mastering:** Smart Audio Ducking (music lowers when AI speaks), Voice EQ Compression, and dynamic Ambient Soundscapes (Rain, Wind, Rumble).
+* **Verified Deliverables:** A no-network matrix covers Urdu, English, Hindi, Arabic, Roman Urdu, vertical/landscape/square layouts, music modes, and media-quality profiles. Every completed render is checked with FFprobe plus full-timeline and slide-aware visual QA before it is marked ready.
+* **Categorized UI Dashboard:** Generator settings are organized into expandable sections for AI models, audio and voice, visuals, branding, and API keys.
+* **Reliable Visual Treatment:** Uses a fixed crossfade transition with an optional documentary contrast treatment.
+* **Fixed Audio Quality:** Smart music ducking and voice EQ/compression are applied automatically to every render.
 * **Branding Options:** Burn translucent Custom Brand Logos/Watermarks, attach Intro/Outro Bumper clips automatically, and display an animated Progress Bar.
 * **Custom Export Directory:** Choose exactly where your final MP4s and SEO text files are saved on your PC right from the UI (using a native file browser).
 * **Rock-Solid Stability (Multi-Agent Patched):** Massive architecture improvements ensuring flawless partial-download handling, graceful JSON fallbacks, precise FFmpeg text escaping, and bulletproof rendering reliability.
 * **Approved Media Sources:** Uses the selected Pexels, Pixabay, Google/Bing image, and Wikimedia image providers. Low-quality candidates are rejected before download, and the renderer reuses valid assets rather than creating blank frames when a subset of media requests fails.
+* **Narration-Synced Visuals:** Each narration slide owns its visual slot and duration. Crossfade overlap is compensated automatically, so the image sequence does not drift away from the spoken script.
 
 ---
 
@@ -45,13 +46,42 @@ Now upgraded to a **Fully Dynamic System** supporting videos up to 10 minutes lo
 
 ### 3. 🎥 Smart Media Priority & Ken Burns Zoompan
 * Select preference: **Mixed (Videos + Images)**, **Videos Only**, or **Images Only**.
-* If **Images Only** or fallback images are used, the engine applies a cinematic vertical Ken Burns crop-scale-and-pan filter graph (scale=1440:2560 and custom FFmpeg zoompan) to create premium motion animations from static topical images.
+* Images and videos use a local saliency estimate to keep the most detailed subject region inside vertical, square, or landscape crops.
+* If **Images Only** or fallback images are used, the engine applies a cinematic Ken Burns crop-scale-and-pan filter graph to create motion from static topical images.
 
 ---
 
 ## Setup & Installation 🛠️ (1-Click Auto Installer)
 
-We have created an automatic setup script for beginners! You do not need to type long commands or create folders manually.
+### Recommended: shareable Windows setup
+
+Send your friend only:
+
+```text
+dist\ReelsBuilderSetup.exe
+```
+
+They double-click the setup file. It installs the project per-user, finds or installs
+Python 3.11–3.14 and FFmpeg, creates an isolated `.venv`, installs pinned packages,
+creates Desktop and Start Menu shortcuts, prepares output folders, and launches the
+dashboard. Internet is required during the first installation. Personal `.env` files,
+API keys, generated videos, job databases, and developer files are not bundled.
+
+The first dashboard opens with blank API-key fields; each user enters and saves their
+own keys. Because the local setup executable is not code-signed, Windows SmartScreen
+may require **More info → Run anyway**.
+
+To rebuild the setup executable from source:
+
+```powershell
+.\installer\build_installer.ps1
+```
+
+For full installer details, see [docs/INSTALLER.md](docs/INSTALLER.md).
+
+### Source checkout installation
+
+The legacy source installer remains available for development checkouts.
 
 ### Step 1: Download Python & Git
 1. **Download Python:** Go to [python.org](https://www.python.org/downloads/) and install it. 
@@ -65,7 +95,7 @@ git clone https://github.com/anisar699/History-Reels-Builder-Gemini.git
 cd History-Reels-Builder-Gemini
 ```
 
-### Step 3: Run the Auto-Installer 🚀
+### Step 3: Run the Source Auto-Installer 🚀
 While inside the `History-Reels-Builder-Gemini` folder, simply type:
 ```powershell
 python install.py

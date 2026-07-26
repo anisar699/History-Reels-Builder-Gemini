@@ -2,7 +2,6 @@ import os
 import glob
 import hashlib
 import html
-import random
 from datetime import datetime
 from pathlib import Path
 import streamlit as st
@@ -662,19 +661,6 @@ with st.sidebar:
         }
         config.TARGET_DURATION = preset_map[duration_preset]
 
-        st.markdown("#### Content direction")
-        niche_selection = st.selectbox(
-            "Content Niche",
-            options=["General", "Education & Learning", "Technology & AI", "Business & Finance", "Health & Fitness", "Food & Recipes", "Travel & Lifestyle", "Entertainment & Pop Culture", "Motivation & Self Improvement", "News & Current Affairs", "Gaming", "History & Culture", "Custom"],
-            index=0,
-            help="Guides the script structure, hook, stock-media queries, and SEO package."
-        )
-        if niche_selection == "Custom":
-            custom_niche = st.text_input("Custom Niche", placeholder="e.g. Real estate for first-time buyers", max_chars=100)
-            config.CONTENT_NICHE = custom_niche.strip() or "General"
-        else:
-            config.CONTENT_NICHE = niche_selection
-
         config.CONTENT_LANGUAGE = st.selectbox(
             "Content Language",
             options=["Urdu", "English", "Hindi", "Arabic", "Roman Urdu"],
@@ -686,18 +672,6 @@ with st.sidebar:
             options=["Engaging & Clear", "Educational", "Energetic & Viral", "Inspirational", "Professional", "Storytelling", "Funny & Casual", "Calm & Reflective", "Dramatic"],
             index=0,
             help="Sets the writing voice, hook, pacing, and call to action."
-        )
-        config.TARGET_PLATFORM = st.selectbox(
-            "Target Platform",
-            options=["Instagram Reels", "TikTok", "YouTube Shorts", "Facebook Reels", "LinkedIn", "X (Twitter)"],
-            index=0,
-            help="Tailors the hook and SEO copy. Frame size remains under Video Size / Aspect Ratio."
-        )
-        config.VISUAL_STYLE = st.selectbox(
-            "Visual Style",
-            options=["Cinematic", "Clean & Minimal", "Documentary", "Modern & Tech", "Warm & Lifestyle", "Fast-Paced Social", "Dark & Moody", "Bold & Colorful"],
-            index=0,
-            help="Guides stock-media search queries and the visual direction in the generated script."
         )
         st.caption("Language-aware caption fonts and custom font upload are supported for the selected content language.")
 
@@ -722,15 +696,6 @@ with st.sidebar:
             index=0,
             help="Select the TTS voice synthesizer engine."
         )
-    
-        voice_pitch = st.selectbox(
-            "Voice Emotion / Pitch",
-            options=["Default", "Deep & Serious (Horror)", "High & Excited (Tech/News)"],
-            index=0,
-            help="Adjust the vocal pitch to match the video's mood."
-        )
-        pitch_map = {"Default": "default", "Deep & Serious (Horror)": "-15Hz", "High & Excited (Tech/News)": "+15Hz"}
-        config.VOICE_PITCH = pitch_map[voice_pitch]
     
         if voice_provider == "ElevenLabs (Realistic)":
             config.VOICE_PROVIDER = "elevenlabs"
@@ -759,27 +724,12 @@ with st.sidebar:
         
         vibe_selection = st.selectbox(
             "Background Music Vibe",
-            options=["random", "mystery", "epic", "sad", "ancient", "modern", "intense"],
+            options=["mystery", "epic", "sad", "ancient", "modern", "intense"],
             index=0,
             help="Local royalty-free soundtrack feel. A selected track is generated once and then reused offline."
         )
     
-        ambient_sound = st.selectbox(
-            "Ambient Soundscape",
-            options=["None", "Rain & Thunder", "Wind & Forest", "Intense Rumble (Horror)"],
-            index=0,
-            help="Automatically mixes dynamic ambient noise into the background."
-        )
-        ambient_map = {"None": None, "Rain & Thunder": "rain", "Wind & Forest": "wind", "Intense Rumble (Horror)": "rumble"}
-        config.AMBIENT_SOUND = ambient_map[ambient_sound]
-    
-        audio_ducking = st.checkbox("Smart Audio Ducking", value=True, help="Automatically lowers background music when the narrator speaks, and raises it during pauses.")
-        config.AUDIO_DUCKING = audio_ducking
-    
-        voice_mastering = st.checkbox("Voice Mastering (EQ & Compression)", value=True, help="Applies equalizer (bass boost) and compression to make the voice sound rich and professional.")
-        config.VOICE_MASTERING = voice_mastering
-
-    with st.expander("🎬 Visuals & Transitions", expanded=False):
+    with st.expander("🎬 Visuals", expanded=False):
     
         media_selection = st.selectbox(
             "Media Type Preference",
@@ -805,14 +755,20 @@ with st.sidebar:
         config.MIN_MEDIA_DIMENSION = 720 if config.MEDIA_QUALITY_PROFILE == "high" else 480
     
         st.markdown("**Allowed Media Sources**", help="Check the stock sites you want to fetch media from.")
-        sources_list = ["Pexels (Videos)", "Pixabay (Videos)", "Storyblocks (Videos)", "Google/Bing (Images)", "Wikimedia Commons (Images)", "NASA (Images)", "Internet Archive (Videos)", "Unsplash (Images)"]
-        default_sources = ["Pexels (Videos)", "Pixabay (Videos)", "Google/Bing (Images)", "Wikimedia Commons (Images)"]
+        sources_list = ["Pexels (Videos)", "Pixabay (Videos)", "Google/Bing (Images)", "Wikimedia Commons (Images)", "Unsplash (Images)"]
+        default_sources = list(sources_list)
         allowed_sources = []
         
         cols = st.columns(2)
         for i, source in enumerate(sources_list):
             with cols[i % 2]:
                 if st.checkbox(source, value=(source in default_sources)):
+                    allowed_sources.append(source)
+
+        with st.popover("Advanced media sources"):
+            st.caption("Specialized or premium sources; enable only when the topic needs them.")
+            for source in ["Storyblocks (Videos)", "NASA (Images)", "Internet Archive (Videos)"]:
+                if st.checkbox(source, value=False, key=f"advanced_source_{source}"):
                     allowed_sources.append(source)
     
         source_mapping = {
@@ -840,55 +796,17 @@ with st.sidebar:
         }
         config.CLIP_DURATION_TARGET = pacing_map[visual_pacing]
     
-        transition_selection = st.selectbox(
-            "Slide Transition Effect",
-            options=["Fade (Crossfade)", "Slide Left", "Slide Right", "Slide Up", "Slide Down", "Wipe Left", "Wipe Right", "Zoom In", "Dissolve", "Pixelize (Mosaic)", "Radial", "Random (Mix)"],
-            index=0,
-            help="Select the visual transition style between clips."
-        )
-        trans_map = {
-            "Fade (Crossfade)": "fade",
-            "Slide Left": "slideleft",
-            "Slide Right": "slideright",
-            "Slide Up": "slideup",
-            "Slide Down": "slidedown",
-            "Wipe Left": "wipeleft",
-            "Wipe Right": "wiperight",
-            "Zoom In": "zoomin",
-            "Dissolve": "dissolve",
-            "Pixelize (Mosaic)": "pixelize",
-            "Radial": "radial",
-            "Random (Mix)": "random"
-        }
-        config.VIDEO_TRANSITION = trans_map[transition_selection]
-    
-        camera_shake = st.checkbox(
-            "Transition Camera Shake",
-            value=False,
-            help="Adds a dynamic high-energy camera rumble vibration effect during clip transitions."
-        )
-        config.CAMERA_SHAKE = camera_shake
-    
-        trans_sfx = st.checkbox("Transition WHOOSH Sound Effect", value=False, help="Synthesizes and injects high-energy whoosh sound effects at every transition point.")
-        config.TRANSITION_SFX = trans_sfx
-    
         color_lut = st.selectbox(
-            "Cinematic Color Grading (LUTs)",
-            options=["None", "Horror Dark", "Cyberpunk Neon", "Vintage 1980s", "Documentary High Contrast"],
+            "Color Grading",
+            options=["None", "Documentary High Contrast"],
             index=0,
             help="Applies a global color grading filter to all clips."
         )
         lut_map = {
-            "None": None, 
-            "Horror Dark": "horror", 
-            "Cyberpunk Neon": "cyberpunk", 
-            "Vintage 1980s": "vintage", 
+            "None": None,
             "Documentary High Contrast": "documentary"
         }
         config.COLOR_FILTER = lut_map[color_lut]
-    
-        cinematic_grain = st.checkbox("Cinematic Noise/Film Grain", value=False, help="Adds vintage moving film grain/noise to background footage.")
-        config.CINEMATIC_GRAIN = cinematic_grain
 
     with st.expander("🏷️ Branding & Overlays", expanded=False):
         # Font Settings
@@ -978,19 +896,6 @@ with st.sidebar:
         # Progress Bar Settings
         show_bar = st.checkbox("Show Video Progress Bar", value=True, help="Draws an animated growing timeline line at the bottom of the video.")
         config.SHOW_PROGRESS_BAR = show_bar
-        if show_bar:
-            bar_color = st.selectbox(
-                "Progress Bar Color",
-                options=["Gold", "Red", "Blue", "Green", "White", "Purple"],
-                index=0
-            )
-            config.PROGRESS_BAR_COLOR = bar_color.lower()
-            bar_height = st.slider("Progress Bar Height (px)", min_value=2, max_value=20, value=8)
-            config.PROGRESS_BAR_HEIGHT = bar_height
-        
-        # Text Watermark & Grain
-        watermark_text = st.text_input("Text Watermark Handle", value="", placeholder="e.g., @YourBrand", help="Draws a translucent text brand handle bottom-center of the video.")
-        config.WATERMARK_TEXT = watermark_text
     
         # Brand Watermark Settings
         show_logo = st.checkbox("Show Brand Watermark Logo", value=False, help="Overlay a custom translucent brand logo image.")
@@ -1054,6 +959,9 @@ with st.sidebar:
             ("ElevenLabs API Key", "ELEVENLABS_API_KEY"),
             ("Pexels API Key", "PEXELS_API_KEY"),
             ("Pixabay API Key", "PIXABAY_API_KEY"),
+            ("Unsplash Access Key", "UNSPLASH_API_KEY"),
+            ("Google Search API Key", "GOOGLE_SEARCH_API_KEY"),
+            ("Google Search Engine ID (CX)", "GOOGLE_SEARCH_CX"),
             ("Storyblocks Public Key", "STORYBLOCKS_PUBLIC_KEY"),
             ("Storyblocks Private Key", "STORYBLOCKS_PRIVATE_KEY"),
         ]
@@ -1278,7 +1186,6 @@ with tabs[0]:
         )
         
         start_btn = st.button("✨ Generate Video", key="generate_reel", width="stretch")
-        st.warning("⚠️ Warning: Generating multiple reels at the same time is not officially supported and may lead to mixed results. Please wait for the current generation to finish.")
 
     # Output Console & Log Blocks
     if start_btn:
@@ -1379,10 +1286,7 @@ with tabs[0]:
             manager = get_job_manager(config.JOB_WORKER_MODE)
             queued_jobs = []
             for idx, t in enumerate(topics_list, 1):
-                config.BG_MUSIC_VIBE = (
-                    vibe_selection if vibe_selection != "random"
-                    else random.choice(["mystery", "epic", "sad", "ancient", "modern", "intense"])
-                )
+                config.BG_MUSIC_VIBE = vibe_selection
                 job = create_generation_job(config)
                 if mode == "Fully Custom Script (Manual Override)":
                     job_id = manager.submit(job, topic=None, provider=provider, manual_script_data=manual_script_data)
@@ -1398,9 +1302,7 @@ with tabs[0]:
                     job_id = manager.submit(job, topic=t, provider=provider)
                 queued_jobs.append(job_id)
 
-            st.success(f"{len(queued_jobs)} reel job(s) added to the render queue.")
             st.session_state["latest_render_job_ids"] = queued_jobs
-            st.info("Follow the live stage tracker below. The completed video and its SEO package will appear here automatically.")
 
     render_live_generation_status(config.OUTPUT_DIR)
 
@@ -1729,7 +1631,6 @@ with tabs[2]:
         with st.expander("🎶 Background Music Vibe Selector", expanded=False):
             st.markdown("""
             **Description:** Background audio soundtrack vibe selection:
-            * `random`: automatic mix.
             * `mystery`: suspenseful, dramatic storytelling.
             * `epic`: bold, high-energy storytelling.
             * `sad`: emotional or reflective storytelling.

@@ -23,6 +23,35 @@ def _safe_component(value: str, fallback: str = "reel") -> str:
     return cleaned or fallback
 
 
+_REMOVED_PIPELINE_SETTINGS = {
+    "AUDIO_DUCKING",
+    "AMBIENT_SOUND",
+    "CAMERA_SHAKE",
+    "CINEMATIC_GRAIN",
+    "CONTENT_NICHE",
+    "PROGRESS_BAR_COLOR",
+    "PROGRESS_BAR_HEIGHT",
+    "TARGET_PLATFORM",
+    "TRANSITION_OFFSETS",
+    "TRANSITION_SFX",
+    "VIDEO_TRANSITION",
+    "VISUAL_STYLE",
+    "VOICE_PITCH",
+    "VOICE_MASTERING",
+    "WATERMARK_TEXT",
+}
+
+
+def _sanitize_pipeline_values(values: dict[str, Any]) -> None:
+    """Drop retired controls from new jobs and restored retry snapshots."""
+    for setting_name in _REMOVED_PIPELINE_SETTINGS:
+        values.pop(setting_name, None)
+    if str(values.get("BG_MUSIC_VIBE", "")).lower() == "random":
+        values["BG_MUSIC_VIBE"] = "mystery"
+    if values.get("COLOR_FILTER") not in {None, "documentary"}:
+        values["COLOR_FILTER"] = None
+
+
 @dataclass
 class GenerationJob:
     """A self-contained configuration and workspace for one video render."""
@@ -67,7 +96,12 @@ class GenerationJob:
         self.SLIDE_TIMINGS = []
         self.DOWNLOADED_VIDEO_IDS = set()
         self.VIDEO_ATTRIBUTIONS = []
-        self.TRANSITION_OFFSETS = []
+        self.MEDIA_CREATORS_USED = set()
+        self.MEDIA_QA_REPORTS = []
+        self.MEDIA_QA_BY_INDEX = {}
+        self.CLIP_DURATIONS = []
+        self.ACTUAL_NARRATION_DURATION = 0.0
+        self.DURATION_SHORTFALL = 0.0
         self.NUM_CLIPS = 0
         self.last_error = ""
 
@@ -125,6 +159,7 @@ def create_generation_job(runtime_config: Any) -> GenerationJob:
         for key, value in vars(runtime_config).items()
         if key.isupper()
     }
+    _sanitize_pipeline_values(values)
     job_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     jobs_root = os.path.join(values.get("TEMP_DIR", "temp"), "jobs")
     workspace = os.path.join(jobs_root, job_id)
@@ -133,20 +168,31 @@ def create_generation_job(runtime_config: Any) -> GenerationJob:
     values["SLIDE_TIMINGS"] = []
     values["DOWNLOADED_VIDEO_IDS"] = set()
     values["VIDEO_ATTRIBUTIONS"] = []
-    values["TRANSITION_OFFSETS"] = []
+    values["MEDIA_CREATORS_USED"] = set()
+    values["MEDIA_QA_REPORTS"] = []
+    values["MEDIA_QA_BY_INDEX"] = {}
+    values["CLIP_DURATIONS"] = []
+    values["ACTUAL_NARRATION_DURATION"] = 0.0
+    values["DURATION_SHORTFALL"] = 0.0
     return GenerationJob(job_id=job_id, workspace=workspace, values=values)
 
 
 def create_retry_job(previous_job: GenerationJob) -> GenerationJob:
     """Clone a job's safe runtime snapshot into a fresh retry workspace."""
     values = copy.deepcopy(previous_job.values)
+    _sanitize_pipeline_values(values)
     job_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     workspace = os.path.join(values["TEMP_DIR"], "jobs", job_id)
     values["TOPIC_TEMP_DIR"] = workspace
     values["SLIDE_TIMINGS"] = []
     values["DOWNLOADED_VIDEO_IDS"] = set()
     values["VIDEO_ATTRIBUTIONS"] = []
-    values["TRANSITION_OFFSETS"] = []
+    values["MEDIA_CREATORS_USED"] = set()
+    values["MEDIA_QA_REPORTS"] = []
+    values["MEDIA_QA_BY_INDEX"] = {}
+    values["CLIP_DURATIONS"] = []
+    values["ACTUAL_NARRATION_DURATION"] = 0.0
+    values["DURATION_SHORTFALL"] = 0.0
     retry = GenerationJob(job_id=job_id, workspace=workspace, values=values)
     retry.RETRY_OF = previous_job.job_id
     return retry
